@@ -48,17 +48,19 @@ contract Custodian is ICustodian, ReentrancyGuard {
     
     //---------------------------------------------Modifiers--------------------------------------------------------
 
-    // Only allows the SettlementEngine to call certain functions that move funds
+    // Only allows the SettlementEngine to call the functions
     modifier onlySettlementEngine() {
         if (msg.sender != settlementEngine) revert NotSettlementEngine();
         _;
     }
 
+    // Only allows the Orderbook to call the functions
     modifier onlyOrderBook() {
         if (msg.sender != address(orderBook)) revert NotOrderBook();
         _;
     }
 
+    // Allows both the SettlementEngine and the OrderBook to call the functions
     modifier onlySettlementEngineOrOrderBook() {
     if (msg.sender != settlementEngine && msg.sender != address(orderBook))
         revert NotSettlementEngineOrOrderBook();
@@ -77,9 +79,9 @@ contract Custodian is ICustodian, ReentrancyGuard {
         if (_tokenRegistry == address(0) || _settlementEngine == address(0) || _orderBook == address(0))
             revert ZeroAddress();
 
-        tokenRegistry    = ITokenRegistry(_tokenRegistry);
+        tokenRegistry = ITokenRegistry(_tokenRegistry);
         settlementEngine = _settlementEngine;
-        orderBook        = IOrderBook(_orderBook);
+        orderBook = IOrderBook(_orderBook);
     }
 
 

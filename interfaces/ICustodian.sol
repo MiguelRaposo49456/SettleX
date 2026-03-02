@@ -10,4 +10,6 @@ interface ICustodian {
     function internalTransfer(address from, address to, address token, uint256 amount) external;
 
     function balanceOf(address client, address token) external view returns (uint256);
+
+    function lockedBalanceOf(address client, address token) external view returns (uint256);
 }
