@@ -35,7 +35,6 @@ contract Custodian is ICustodian, ReentrancyGuard {
     //----------------------------------------------Errors-----------------------------------------------------------
     error NotSettlementEngine();
     error NotOrderBook();
-    error NotSettlementEngineOrOrderBook();
     error SystemPaused();
     error TokenNotAllowed(address token);
     error UserNotAllowed(address user);
@@ -60,16 +59,9 @@ contract Custodian is ICustodian, ReentrancyGuard {
         _;
     }
 
-    // Allows both the SettlementEngine and the OrderBook to call the functions
-    modifier onlySettlementEngineOrOrderBook() {
-    if (msg.sender != settlementEngine && msg.sender != address(orderBook))
-        revert NotSettlementEngineOrOrderBook();
-    _;
-}
-
     // Checks the OrderBook's paused state
     modifier whenNotPaused() {
-        if (orderBook.paused()) revert SystemPaused();
+        if (orderBook.isSystemPaused()) revert SystemPaused();
         _;
     }
 
@@ -161,7 +153,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @param token  Token to unlock
      * @param amount Amount to unlock
      */
-    function unlockFunds(address client, address token, uint256 amount) external onlySettlementEngineOrOrderBook whenNotPaused {
+    function unlockFunds(address client, address token, uint256 amount) external onlyOrderBook whenNotPaused {
         if (amount == 0) revert ZeroAmount();
 
         uint256 locked = _lockedBalances[client][token];

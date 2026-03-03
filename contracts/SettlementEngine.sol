@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import "../interfaces/ISettlementEngine.sol";
 import "../interfaces/ITokenRegistry.sol";
 import "../interfaces/IOrderbook.sol";
-import "../interfaces";
+import "../interfaces/ICustodian.sol";
 
 contract SettlementEngine is ISettlementEngine {
     
@@ -35,7 +35,7 @@ contract SettlementEngine is ISettlementEngine {
 
     // Checks the OrderBook's paused state
     modifier whenNotPaused() {
-        if (orderBook.paused()) revert SystemPaused();
+        if (orderBook.isSystemPaused()) revert SystemPaused();
         _;
     }
 
@@ -53,8 +53,11 @@ contract SettlementEngine is ISettlementEngine {
 
     //----------------------------------------------Functions-------------------------------------------------------
     function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker) external onlyOrderBook whenNotPaused {
-        Order makerOrder = orderBook.getOrder(orderIdMaker);
-        Order takerOrder = orderBook.getOrder(orderIdTaker);
+        IOrderBook.Order memory makerOrder = orderBook.getOrder(orderIdMaker);
+        IOrderBook.Order memory takerOrder = orderBook.getOrder(orderIdTaker);
+
+        assert(makerOrder.tokenIn == takerOrder.tokenOut);
+        assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
         // Check if the tokens in the orders aren't blacklisted
         if (!tokenRegistry.isTokenAllowed(makerOrder.tokenIn) || !tokenRegistry.isTokenAllowed(takerOrder.tokenIn)) {
@@ -63,24 +66,26 @@ contract SettlementEngine is ISettlementEngine {
             revert TokenNotAllowed();
         }
 
-        // Check if the users in the orders aren't blacklisted
+        // Check maker user — if blacklisted cancel maker only, taker order stays active
         if(!tokenRegistry.isUserAllowed(makerOrder.user)) {
             orderBook.cancelOrder(orderIdMaker);
             revert UserNotAllowed();
         }
 
+        // Check taker user — if blacklisted cancel taker only, maker order stays active
         if(!tokenRegistry.isUserAllowed(takerOrder.user)) {
             orderBook.cancelOrder(orderIdTaker);
             revert UserNotAllowed();
         }
         
-        // Check if the users have enough locked funds to execute the trade
+        // Check maker has enough locked funds — if not cancel maker only
         uint256 makerLockedBalance = custodian.lockedBalanceOf(makerOrder.user, makerOrder.tokenIn);
         if(makerLockedBalance < makerOrder.amount) {
             orderBook.cancelOrder(orderIdMaker);
             revert InsufficientLockedBalance(makerLockedBalance, makerOrder.amount);
         }
 
+        // Check taker has enough locked funds — if not cancel taker only
         uint256 takerLockedBalance = custodian.lockedBalanceOf(takerOrder.user, takerOrder.tokenIn);
         if(takerLockedBalance < takerOrder.amount) {
             orderBook.cancelOrder(orderIdTaker);
