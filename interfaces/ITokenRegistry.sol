@@ -17,7 +17,4 @@ interface ITokenRegistry {
 
     // Withdrawal validation
     function canUserWithdraw(address user) external view returns (bool);
-
-    //TODO: add it to the interface if other contracts depend on it
-    // function getUserStatus(address user) external view returns (UserStatus);
 }

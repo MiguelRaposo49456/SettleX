@@ -192,20 +192,25 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
     //----------------------------------------------- View Functions ----------------------------------------------------
 
-    // Available balance for a client and token
+    /**
+     * @notice Available balance for a client and token
+     */
     function balanceOf(address client, address token) external view returns (uint256) {
         return _balances[client][token];
     }
 
-    // Locked balance for a client and token
+    /** 
+     * @notice Locked balance for a client and token
+     */
     function lockedBalanceOf(address client, address token) external view returns (uint256) {
         return _lockedBalances[client][token];
     }
 
-    // Available and locked balances in a single call
+    /**
+     * @notice Full balance (available + locked) for a client and token
+     */
     function fullBalanceOf(address client, address token) external view returns (uint256 available, uint256 locked) {
         available = _balances[client][token];
-        locked    = _lockedBalances[client][token];
-        return (available, locked); //? could be removed
+        locked = _lockedBalances[client][token];
     }
 }
