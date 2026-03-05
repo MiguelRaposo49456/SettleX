@@ -33,6 +33,9 @@ interface IOrderBook {
     // Called by the SettlementEngine after a trade to update remaining amount
     function updateOrderAmount(uint256 orderId, uint256 remainingAmount) external;
 
+    // Allows a user to fulfill an existing order on the orderbok
+    function takeOrder(uint256 makerOrderId, uint256 takerAmount) external;
+
     // Returns the full Order struct for a given ID
     function getOrder(uint256 orderId) external view returns (Order memory);
 

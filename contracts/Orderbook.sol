@@ -71,6 +71,7 @@ contract OrderBook is IOrderBook {
     error NotOrderOwner(uint256 orderId);
     error NotSettlementEngine();
     error OrderNotActive(uint256 orderId);
+    error PartialFillNotAllowed();
     error SameToken();
     error SystemPaused();
     error TokenNotAllowed(address token);
@@ -322,6 +323,47 @@ contract OrderBook is IOrderBook {
             if (!matchFoundAtLevel) break;
         }
     }
+
+    function takeOrder(uint256 makerOrderId, uint256 takerAmount) external whenNotPaused whenInitialized {
+        Order storage maker = _orders[makerOrderId];
+
+        if (!maker.active) revert OrderNotActive(makerOrderId);
+
+        if (!tokenRegistry.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
+        if (!tokenRegistry.isUserAllowed(maker.client)) revert UserNotAllowed(maker.client);
+
+        if (!tokenRegistry.isTokenAllowed(maker.tokenIn))  revert TokenNotAllowed(maker.tokenIn);
+        if (!tokenRegistry.isTokenAllowed(maker.tokenOut)) revert TokenNotAllowed(maker.tokenOut);
+
+        uint256 amountToFulfill = takerAmount > maker.amount ? maker.amount : takerAmount;
+        // If maker doesn't allow partials, taker must fulfill the entire order
+        if (!maker.partialAllowed && amountToFulfill < maker.amount) revert PartialFillNotAllowed();
+
+        uint8 takerSide = maker.side == BUY ? SELL : BUY;
+
+        // Lock taker funds
+        uint256 lockAmount = _computeLockAmount(takerSide, amountToFulfill, maker.price);
+        custodian.lockFunds(msg.sender, maker.tokenIn, lockAmount);
+
+        // Build taker order as a memory struct — never stored in the book
+        IOrderBook.Order memory takerOrder = IOrderBook.Order({
+            id:             0,
+            client:         msg.sender,
+            pairId:         maker.pairId,
+            tokenIn:        maker.tokenOut,
+            tokenOut:       maker.tokenIn,
+            price:          maker.price,
+            amount:         amountToFulfill,
+            side:           takerSide,
+            active:         true,
+            timestamp:      block.timestamp,
+            partialAllowed: false
+        });
+
+        // Delegate directly to Settlement Engine
+        settlementEngine.executeDirectTrade(makerOrderId, takerOrder);
+    }
+
 
     /**
      * @notice Checks if the system is paused (circuit breaker)
