@@ -59,29 +59,56 @@ contract SettlementEngine is ISettlementEngine {
      * @param orderIdTaker The ID of the taker order
      */
     function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker) external onlyOrderBook whenNotPaused {
-        IOrderBook.Order memory makerOrder = orderBook.getOrder(orderIdMaker);
         IOrderBook.Order memory takerOrder = orderBook.getOrder(orderIdTaker);
+        _executeTrade(orderIdMaker, takerOrder, orderIdTaker);
+    }
+
+
+    /**
+     * @notice Executes a direct trade between a maker order and a taker order provided as input
+     * @dev Validates orders, checks balances, performs internal transfers, and updates the OrderBook only for the maker order
+     * @param makerOrderId The ID of the maker order
+     * @param takerOrder The taker order details provided as input (not stored in OrderBook)
+     */
+    function executeDirectTrade(uint256 makerOrderId, IOrderBook.Order memory takerOrder) external onlyOrderBook whenNotPaused {
+        _executeTrade(makerOrderId, takerOrder, 0);
+    }
+
+    /**
+     * @notice Internal function to execute a trade between a maker and taker order
+     * @param makerOrderId The ID of the maker order
+     * @param takerOrder The taker order details provided as input (not stored in OrderBook)
+     * @param takerOrderId The ID of the taker order if it exists in the OrderBook, or 0 if it's a direct trade
+     */
+    function _executeTrade(
+        uint256 makerOrderId,
+        IOrderBook.Order memory takerOrder,
+        uint256 takerOrderId  // 0 if taker has no stored order
+    ) internal {
+        IOrderBook.Order memory makerOrder = orderBook.getOrder(makerOrderId);
 
         assert(makerOrder.tokenIn == takerOrder.tokenOut);
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
         // Check if the tokens in the orders aren't blacklisted
-        if (!tokenRegistry.isTokenAllowed(makerOrder.tokenIn) || 
-            !tokenRegistry.isTokenAllowed(takerOrder.tokenIn)) {
-            orderBook.cancelOrder(orderIdMaker);
-            orderBook.cancelOrder(orderIdTaker);
+        if (!tokenRegistry.isTokenAllowed(makerOrder.tokenIn) || !tokenRegistry.isTokenAllowed(takerOrder.tokenIn)) {
+            orderBook.cancelOrder(makerOrderId);
+            if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             revert TokenNotAllowed();
         }
 
         // Check maker user — if blacklisted cancel maker only, taker order stays active
         if (!tokenRegistry.isUserAllowed(makerOrder.client)) {
-            orderBook.cancelOrder(orderIdMaker);
+            orderBook.cancelOrder(makerOrderId);
+            if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             revert UserNotAllowed();
         }
 
         // Check taker user — if blacklisted cancel taker only, maker order stays active
         if (!tokenRegistry.isUserAllowed(takerOrder.client)) {
-            orderBook.cancelOrder(orderIdTaker);
+            if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             revert UserNotAllowed();
         }
 
@@ -93,87 +120,32 @@ contract SettlementEngine is ISettlementEngine {
         // Check maker has enough locked funds for the executed amount
         uint256 makerLocked = custodian.lockedBalanceOf(makerOrder.client, makerOrder.tokenOut);
         if (makerLocked < executedAmount) {
-            orderBook.cancelOrder(orderIdMaker);
+            orderBook.cancelOrder(makerOrderId);
+            if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             revert InsufficientLockedBalance(makerLocked, executedAmount);
         }
 
         // Check taker has enough locked funds for the executed amount
         uint256 takerLocked = custodian.lockedBalanceOf(takerOrder.client, takerOrder.tokenOut);
         if (takerLocked < executedAmount) {
-            orderBook.cancelOrder(orderIdTaker);
+            if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerLocked);
             revert InsufficientLockedBalance(takerLocked, executedAmount);
         }
 
         // Execute both legs of the trade atomically
-        custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, executedAmount);
-        custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, executedAmount);
+        custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenIn, executedAmount);
+        custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenIn, executedAmount);
 
         // Update remaining amounts in the OrderBook
         // Each order's new remaining = old amount - executedAmount
-        orderBook.updateOrderAmount(orderIdMaker, makerOrder.amount - executedAmount);
-        orderBook.updateOrderAmount(orderIdTaker, takerOrder.amount - executedAmount);
-
-        emit TradeExecuted(orderIdMaker, orderIdTaker, executedAmount);
-    }
-
-
-    /**
-     * @notice Executes a direct trade between a maker order and a taker order provided as input
-     * @dev Validates orders, checks balances, performs internal transfers, and updates the OrderBook only for the maker order
-     * @param makerOrderId The ID of the maker order
-     * @param takerOrder The taker order details provided as input (not stored in OrderBook)
-     */
-    function executeDirectTrade(uint256 makerOrderId, IOrderBook.Order memory takerOrder) external onlyOrderBook whenNotPaused {
-        IOrderBook.Order memory makerOrder = orderBook.getOrder(makerOrderId);
-
-        assert(makerOrder.tokenIn == takerOrder.tokenOut);
-        assert(makerOrder.tokenOut == takerOrder.tokenIn);
-
-        // Check if the tokens in the orders aren't blacklisted
-        if (!tokenRegistry.isTokenAllowed(makerOrder.tokenIn) ||
-            !tokenRegistry.isTokenAllowed(takerOrder.tokenIn)) {
-            orderBook.cancelOrder(makerOrderId);
-            // taker order is never stored so nothing to cancel on that side
-            revert TokenNotAllowed();
-        }
-
-        // Check maker user — if blacklisted cancel maker only, taker order stays active
-        if (!tokenRegistry.isUserAllowed(makerOrder.client)) {
-            orderBook.cancelOrder(makerOrderId);
-            revert UserNotAllowed();
-        }
-
-        // Check taker user — if blacklisted cancel taker only, maker order stays active
-        if (!tokenRegistry.isUserAllowed(takerOrder.client)) {
-            // taker order was never stored, just revert
-            revert UserNotAllowed();
-        }
-
-        // Determine executed amount
-        uint256 executedAmount = makerOrder.amount < takerOrder.amount ? makerOrder.amount : takerOrder.amount;
-
-        // Check maker has enough locked funds for the executed amount
-        uint256 makerLocked = custodian.lockedBalanceOf(makerOrder.client, makerOrder.tokenOut);
-        if (makerLocked < executedAmount) {
-            orderBook.cancelOrder(makerOrderId);
-            revert InsufficientLockedBalance(makerLocked, executedAmount);
-        }
-
-        // Check taker has enough locked funds for the executed amount
-        uint256 takerLocked = custodian.lockedBalanceOf(takerOrder.client, takerOrder.tokenOut);
-        if (takerLocked < executedAmount) {
-            // taker funds were locked in takeOrder() — unlock them before reverting
-            custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerLocked);
-            revert InsufficientLockedBalance(takerLocked, executedAmount);
-        }
-
-        // Execute both legs
-        custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, executedAmount);
-        custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, executedAmount);
-
-        // Update maker amount — taker has no stored order to update
         orderBook.updateOrderAmount(makerOrderId, makerOrder.amount - executedAmount);
 
-        emit TradeExecuted(makerOrderId, 0, executedAmount);
+        // Update taker amount only if it has a stored order
+        if (takerOrderId != 0) {
+            orderBook.updateOrderAmount(takerOrderId, takerOrder.amount - executedAmount);
+        }
+
+        emit TradeExecuted(makerOrderId, takerOrderId, executedAmount);
     }
 }
