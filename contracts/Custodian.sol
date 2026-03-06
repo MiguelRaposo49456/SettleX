@@ -40,7 +40,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
     error NotAdmin();
     error NotInitialized();
     error NotSettlementEngine();
-    error NotOrderBook();
+    error NotOrderbook();
     error SystemPaused();
     error TokenNotAllowed(address token);
     error UserNotAllowed(address user);
@@ -61,7 +61,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
     // Only allows the Orderbook to call the functions
     modifier onlyOrderBook() {
-        if (msg.sender != address(orderBook)) revert NotOrderBook();
+        if (msg.sender != address(orderBook)) revert NotOrderbook();
         _;
     }
 
@@ -115,7 +115,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @param token  Address of the ERC-20 token to deposit
      * @param amount Amount to deposit
      */
-    function deposit(address token, uint256 amount) external nonReentrant whenNotPaused {
+    function deposit(address token, uint256 amount) external nonReentrant whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
         if (!tokenRegistry.isTokenAllowed(token)) revert TokenNotAllowed(token);
         if (!tokenRegistry.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
@@ -138,7 +138,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @param token  Address of the ERC-20 token
      * @param amount Amount to withdraw
      */
-    function withdraw(address token, uint256 amount) external nonReentrant whenNotPaused {
+    function withdraw(address token, uint256 amount) external nonReentrant whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
         if (!tokenRegistry.canUserWithdraw(msg.sender)) revert UserCannotWithdraw(msg.sender);
 
@@ -162,7 +162,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @param token  Token to lock
      * @param amount Amount to lock
      */
-    function lockFunds(address client, address token, uint256 amount) external onlyOrderBook whenNotPaused {
+    function lockFunds(address client, address token, uint256 amount) external onlyOrderBook whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
 
         uint256 available = _balances[client][token];
@@ -183,7 +183,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @param token  Token to unlock
      * @param amount Amount to unlock
      */
-    function unlockFunds(address client, address token, uint256 amount) external onlyOrderBook whenNotPaused {
+    function unlockFunds(address client, address token, uint256 amount) external onlyOrderBook whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
 
         uint256 locked = _lockedBalances[client][token];
@@ -207,7 +207,12 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @param token  Token being transferred
      * @param amount Amount to transfer
      */
-    function internalTransfer(address from, address to, address token, uint256 amount) external onlySettlementEngine whenNotPaused {
+    function internalTransfer(
+        address from,
+        address to, 
+        address token, 
+        uint256 amount
+    ) external onlySettlementEngine whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
 
         uint256 locked = _lockedBalances[from][token];

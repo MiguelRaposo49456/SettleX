@@ -242,7 +242,7 @@ contract OrderBook is IOrderBook {
      * @param orderId ID of the order to update
      * @param remainingAmount Amount still left to fill after this trade
      */
-    function updateOrderAmount(uint256 orderId, uint256 remainingAmount) external onlySettlementEngine {
+    function updateOrderAmount(uint256 orderId, uint256 remainingAmount) external onlySettlementEngine whenInitialized {
         Order storage order = _orders[orderId];
 
         order.amount = remainingAmount;

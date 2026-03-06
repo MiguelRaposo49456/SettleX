@@ -89,7 +89,7 @@ contract SettlementEngine is ISettlementEngine {
      * @param orderIdMaker The ID of the maker order
      * @param orderIdTaker The ID of the taker order
      */
-    function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker) external onlyOrderBook whenNotPaused {
+    function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker) external onlyOrderBook whenNotPaused whenInitialized {
         IOrderBook.Order memory takerOrder = orderBook.getOrder(orderIdTaker);
         _executeTrade(orderIdMaker, takerOrder, orderIdTaker);
     }
@@ -101,7 +101,7 @@ contract SettlementEngine is ISettlementEngine {
      * @param makerOrderId The ID of the maker order
      * @param takerOrder The taker order details provided as input (not stored in OrderBook)
      */
-    function executeDirectTrade(uint256 makerOrderId, IOrderBook.Order memory takerOrder) external onlyOrderBook whenNotPaused {
+    function executeDirectTrade(uint256 makerOrderId, IOrderBook.Order memory takerOrder) external onlyOrderBook whenNotPaused whenInitialized {
         _executeTrade(makerOrderId, takerOrder, 0);
     }
 
