@@ -12,10 +12,12 @@ import "../interfaces/IOrderbook.sol";
 contract Custodian is ICustodian, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    address public immutable settlementEngine;
-    IOrderBook public immutable orderBook;
+    address public settlementEngine;
+    IOrderBook public orderBook;
     ITokenRegistry public immutable tokenRegistry;
 
+    bool public initialized;
+    address public immutable admin;
 
     //Available balance: client => token => amount
     mapping(address client => mapping(address token => uint256 amount)) private _balances;
@@ -30,9 +32,13 @@ contract Custodian is ICustodian, ReentrancyGuard {
     event FundsLocked(address indexed client, address indexed token, uint256 amount);
     event FundsUnlocked(address indexed client, address indexed token, uint256 amount);
     event InternalTransfer(address indexed from, address indexed to, address indexed token, uint256 amount);
+    event Initialized(address orderbook, address settlementEngine);
 
 
     //----------------------------------------------Errors-----------------------------------------------------------
+    error AlreadyInitialized();
+    error NotAdmin();
+    error NotInitialized();
     error NotSettlementEngine();
     error NotOrderBook();
     error SystemPaused();
@@ -65,17 +71,41 @@ contract Custodian is ICustodian, ReentrancyGuard {
         _;
     }
 
-
-    //----------------------------------------------Constructor-----------------------------------------------------
-    constructor(address _tokenRegistry, address _settlementEngine, address _orderBook) {
-        if (_tokenRegistry == address(0) || _settlementEngine == address(0) || _orderBook == address(0))
-            revert ZeroAddress();
-
-        tokenRegistry = ITokenRegistry(_tokenRegistry);
-        settlementEngine = _settlementEngine;
-        orderBook = IOrderBook(_orderBook);
+    modifier onlyAdmin() {
+        if (msg.sender != admin) revert NotAdmin();
+        _;
     }
 
+    modifier whenInitialized() {
+        if (!initialized) revert NotInitialized();
+        _;
+    }
+
+
+    //----------------------------------------------Constructor-----------------------------------------------------
+    constructor(address _tokenRegistry) {
+        if (_tokenRegistry == address(0)) revert ZeroAddress();
+
+        tokenRegistry = ITokenRegistry(_tokenRegistry);
+        admin = msg.sender;
+    }
+
+
+    //--------------------------------Initialization — resolves circular dependency---------------------------------
+    /**
+     * @notice Wire up Orderbook and SettlementEngine after all three contracts are deployed
+     * @dev Can only be called once by the admin
+     */
+    function initialize(address _orderBook, address _settlementEngine) external onlyAdmin {
+        if (initialized) revert AlreadyInitialized();
+        if (_orderBook == address(0) || _settlementEngine == address(0)) revert ZeroAddress();
+
+        settlementEngine = _settlementEngine;
+        orderBook = IOrderBook(_orderBook);
+        initialized = true;
+
+        emit Initialized(_orderBook, _settlementEngine);
+    }
 
     //----------------------------------------------Functions-------------------------------------------------------
 

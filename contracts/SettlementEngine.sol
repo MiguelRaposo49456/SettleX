@@ -8,15 +8,22 @@ import "../interfaces/ICustodian.sol";
 
 contract SettlementEngine is ISettlementEngine {
     
-    ICustodian public immutable custodian;
-    IOrderBook public immutable orderBook;
+    ICustodian public custodian;
+    IOrderBook public orderBook;
     ITokenRegistry public immutable tokenRegistry;
+
+    bool public initialized;
+    address public immutable admin;
 
 
     //----------------------------------------------Events-----------------------------------------------------------
     event TradeExecuted(uint256 indexed orderIdMaker, uint256 indexed orderIdTaker, uint256 executedAmount);
+    event Initialized(address orderbook, address custodian);
 
     //----------------------------------------------Errors-----------------------------------------------------------
+    error AlreadyInitialized();
+    error NotAdmin();
+    error NotInitialized();
     error InsufficientLockedBalance(uint256 lockedBalance, uint256 requiredAmount);
     error NotOrderBook();
     error SystemPaused();
@@ -38,15 +45,39 @@ contract SettlementEngine is ISettlementEngine {
         _;
     }
 
+    modifier onlyAdmin() {
+        if (msg.sender != admin) revert NotAdmin();
+        _;
+    }
+
+    modifier whenInitialized() {
+        if (!initialized) revert NotInitialized();
+        _;
+    }
+
 
     //----------------------------------------------Constructor-----------------------------------------------------
-    constructor(address _tokenRegistry, address _custodian, address _orderBook) {
-        if (_tokenRegistry == address(0) || _custodian == address(0) || _orderBook == address(0))
-            revert ZeroAddress();
+    constructor(address _tokenRegistry) {
+        if (_tokenRegistry == address(0)) revert ZeroAddress();
 
         tokenRegistry = ITokenRegistry(_tokenRegistry);
-        custodian = ICustodian(_custodian);
+        admin = msg.sender;
+    }
+
+    //--------------------------------Initialization — resolves circular dependency---------------------------------
+    /**
+     * @notice Wire up Orderbook and Custodian after all three contracts are deployed
+     * @dev Can only be called once by the admin
+     */
+    function initialize(address _orderBook, address _custodian) external onlyAdmin {
+        if (initialized) revert AlreadyInitialized();
+        if (_orderBook == address(0) || _custodian == address(0)) revert ZeroAddress();
+
         orderBook = IOrderBook(_orderBook);
+        custodian = ICustodian(_custodian);
+        initialized = true;
+
+        emit Initialized(_orderBook, _custodian);
     }
 
 

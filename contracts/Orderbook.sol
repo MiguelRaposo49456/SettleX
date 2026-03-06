@@ -22,8 +22,9 @@ contract OrderBook is IOrderBook {
     ITokenRegistry public immutable tokenRegistry;
     ICustodian public custodian;
     ISettlementEngine public settlementEngine;
+    
     bool public initialized;
-
+    address public immutable admin;
 
     // Global order storage by ID
     mapping(uint256 orderId => Order) private _orders;
@@ -67,6 +68,7 @@ contract OrderBook is IOrderBook {
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
     error InvalidSide();
+    error NotAdmin();
     error NotInitialized();
     error NotOrderOwner(uint256 orderId);
     error NotSettlementEngine();
@@ -96,31 +98,37 @@ contract OrderBook is IOrderBook {
         if (msg.sender != address(settlementEngine)) revert NotSettlementEngine();
         _;
     }
+
+    modifier onlyAdmin() {
+        if (msg.sender != admin) revert NotAdmin();
+        _;
+    }
     
     
     //----------------------------------------------Constructor-----------------------------------------------------
     constructor(address _tokenRegistry) {
         if (_tokenRegistry == address(0)) revert ZeroAddress();
         tokenRegistry = ITokenRegistry(_tokenRegistry);
+        admin = msg.sender;
         _nextOrderId  = 1; // start at 1 so 0 can be used as null in linked lists
     }
 
 
     //--------------------------------Initialization — resolves circular dependency---------------------------------
-    /*
-     * Wire up Custodian and SettlementEngine after all three contracts are deployed
-     * Can only be called once by the operator (maybe an Admin would be a better idea)
-    function initialize(address _custodian, address _settlementEngine) external onlyOperator {
+    /**
+     * @notice Wire up Custodian and SettlementEngine after all three contracts are deployed
+     * @dev Can only be called once by the admin
+     */
+    function initialize(address _custodian, address _settlementEngine) external onlyAdmin {
         if (initialized) revert AlreadyInitialized();
         if (_custodian == address(0) || _settlementEngine == address(0)) revert ZeroAddress();
 
-        custodian        = ICustodian(_custodian);
+        custodian = ICustodian(_custodian);
         settlementEngine = ISettlementEngine(_settlementEngine);
-        initialized      = true;
+        initialized = true;
 
         emit Initialized(_custodian, _settlementEngine);
     }
-    */
 
 
     //------------------------------------------Circuit Breaker------------------------------------------------------
