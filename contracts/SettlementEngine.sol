@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "../interfaces/ISettlementEngine.sol";
-import "../interfaces/ITokenRegistry.sol";
+import "../interfaces/IComplianceManager.sol";
 import "../interfaces/IOrderbook.sol";
 import "../interfaces/ICustodian.sol";
 
@@ -10,7 +10,7 @@ contract SettlementEngine is ISettlementEngine {
     
     ICustodian public custodian;
     IOrderBook public orderBook;
-    ITokenRegistry public immutable tokenRegistry;
+    IComplianceManager public immutable complianceManager;
 
     bool public initialized;
     address public immutable admin;
@@ -41,7 +41,7 @@ contract SettlementEngine is ISettlementEngine {
 
     // Checks the OrderBook's paused state
     modifier whenNotPaused() {
-        if (orderBook.isSystemPaused()) revert SystemPaused();
+        if (complianceManager.isSystemPaused()) revert SystemPaused();
         _;
     }
 
@@ -57,10 +57,10 @@ contract SettlementEngine is ISettlementEngine {
 
 
     //----------------------------------------------Constructor-----------------------------------------------------
-    constructor(address _tokenRegistry) {
-        if (_tokenRegistry == address(0)) revert ZeroAddress();
+    constructor(address _complianceManager) {
+        if (_complianceManager == address(0)) revert ZeroAddress();
 
-        tokenRegistry = ITokenRegistry(_tokenRegistry);
+        complianceManager = IComplianceManager(_complianceManager);
         admin = msg.sender;
     }
 
@@ -122,7 +122,7 @@ contract SettlementEngine is ISettlementEngine {
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
         // Check if the tokens in the orders aren't blacklisted
-        if (!tokenRegistry.isTokenAllowed(makerOrder.tokenIn) || !tokenRegistry.isTokenAllowed(takerOrder.tokenIn)) {
+        if (!complianceManager.isTokenAllowed(makerOrder.tokenIn) || !complianceManager.isTokenAllowed(takerOrder.tokenIn)) {
             orderBook.cancelOrder(makerOrderId);
             if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
@@ -130,14 +130,14 @@ contract SettlementEngine is ISettlementEngine {
         }
 
         // Check maker user — if blacklisted cancel maker only, taker order stays active
-        if (!tokenRegistry.isUserAllowed(makerOrder.client)) {
+        if (!complianceManager.isUserAllowed(makerOrder.client)) {
             orderBook.cancelOrder(makerOrderId);
             if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             revert UserNotAllowed();
         }
 
         // Check taker user — if blacklisted cancel taker only, maker order stays active
-        if (!tokenRegistry.isUserAllowed(takerOrder.client)) {
+        if (!complianceManager.isUserAllowed(takerOrder.client)) {
             if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             revert UserNotAllowed();

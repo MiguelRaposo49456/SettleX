@@ -12,7 +12,7 @@ const UserStatus = {
 
 describe("Custodian", function () {
     let admin: any, client1: any, client2: any;
-    let tokenRegistry: any, orderbook: any, custodian: any, settlementEngine: any;
+    let complianceManager: any, orderbook: any, custodian: any, settlementEngine: any;
     let tokenA: any, tokenB: any;
     let orderbookSigner: any, settlementEngineSigner: any;
 
@@ -20,7 +20,7 @@ describe("Custodian", function () {
     const LOCK_AMOUNT = ethers.parseUnits("50", 18);
 
     beforeEach(async function () {
-        ({ admin, client1, client2, tokenRegistry, orderbook, custodian, settlementEngine, tokenA, tokenB } 
+        ({ admin, client1, client2, complianceManager, orderbook, custodian, settlementEngine, tokenA, tokenB } 
             = await deploySystem(ethers));
 
         // Create the Impersonated Signers for the contracts
@@ -55,13 +55,13 @@ describe("Custodian", function () {
         });
 
         it("should revert if token is blacklisted", async function () {
-            await tokenRegistry.blacklistToken(tokenA.target);
+            await complianceManager.blacklistToken(tokenA.target);
             await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
                 .to.be.revertedWithCustomError(custodian, "TokenNotAllowed");
         });
 
         it("should revert if user is blacklisted", async function () {
-            await tokenRegistry.setUserStatus(client1.address, UserStatus.Blacklisted);
+            await complianceManager.blacklistUser(client1.address);
             await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
                 .to.be.revertedWithCustomError(custodian, "UserNotAllowed");
         });
@@ -98,13 +98,13 @@ describe("Custodian", function () {
         });
 
         it("should revert if user is fully blacklisted", async function () {
-            await tokenRegistry.setUserStatus(client1.address, UserStatus.Blacklisted);
+            await complianceManager.blacklistUser(client1.address);
             await expect(custodian.connect(client1).withdraw(tokenA.target, DEPOSIT_AMOUNT))
                 .to.be.revertedWithCustomError(custodian, "UserCannotWithdraw");
         });
 
         it("should allow withdrawal if user is BlacklistedWithWithdrawal", async function () {
-            await tokenRegistry.setUserStatus(client1.address, UserStatus.BlacklistedWithWithdrawal);
+            await complianceManager.setUserStatus(client1.address, UserStatus.BlacklistedWithWithdrawal);
             await custodian.connect(client1).withdraw(tokenA.target, DEPOSIT_AMOUNT);
             expect(await custodian.balanceOf(client1.address, tokenA.target)).to.equal(0);
         });

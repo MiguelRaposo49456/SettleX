@@ -5,7 +5,7 @@ import "solidity-linked-list/contracts/StructuredLinkedList.sol";
 import "../interfaces/IOrderbook.sol";
 import "../interfaces/ICustodian.sol";
 import "../interfaces/ISettlementEngine.sol";
-import "../interfaces/ITokenRegistry.sol";
+import "../interfaces/IComplianceManager.sol";
 import "./libs/BokkyPooBahsRedBlackTreeLibrary.sol";
 
 
@@ -19,7 +19,7 @@ contract OrderBook is IOrderBook {
     uint8 public constant BUY  = 0;
     uint8 public constant SELL = 1;
 
-    ITokenRegistry public immutable tokenRegistry;
+    IComplianceManager public immutable complianceManager;
     ICustodian public custodian;
     ISettlementEngine public settlementEngine;
     
@@ -43,8 +43,6 @@ contract OrderBook is IOrderBook {
 
     // FIFO linked lists of order IDs per (pair, price level) for sells
     mapping(bytes32 pairId => mapping(uint256 price => StructuredLinkedList.List)) private _sellOrders;
-
-    bool public paused;
 
 
     //----------------------------------------------Events-----------------------------------------------------------
@@ -76,7 +74,7 @@ contract OrderBook is IOrderBook {
     error PartialFillNotAllowed();
     error SameToken();
     error SystemPaused();
-    error TokenNotAllowed(address token);
+    error TokenNotAllowed();
     error UserNotAllowed(address user);
     error ZeroAddress();
     error ZeroAmount();
@@ -85,7 +83,7 @@ contract OrderBook is IOrderBook {
 
     //---------------------------------------------Modifiers--------------------------------------------------------
     modifier whenNotPaused() {
-        if (paused) revert SystemPaused();
+        if (complianceManager.isSystemPaused()) revert SystemPaused();
         _;
     }
 
@@ -106,9 +104,9 @@ contract OrderBook is IOrderBook {
     
     
     //----------------------------------------------Constructor-----------------------------------------------------
-    constructor(address _tokenRegistry) {
-        if (_tokenRegistry == address(0)) revert ZeroAddress();
-        tokenRegistry = ITokenRegistry(_tokenRegistry);
+    constructor(address _complianceManager) {
+        if (_complianceManager == address(0)) revert ZeroAddress();
+        complianceManager = IComplianceManager(_complianceManager);
         admin = msg.sender;
         _nextOrderId  = 1; // start at 1 so 0 can be used as null in linked lists
     }
@@ -129,20 +127,6 @@ contract OrderBook is IOrderBook {
 
         emit Initialized(_custodian, _settlementEngine);
     }
-
-
-    //------------------------------------------Circuit Breaker------------------------------------------------------
-    /*
-    function pause() external onlyOperator {
-        paused = true;
-        emit Paused(msg.sender);
-    }
-
-    function unpause() external onlyOperator {
-        paused = false;
-        emit Unpaused(msg.sender);
-    }
-    */
 
 
     //----------------------------------------------Functions-------------------------------------------------------
@@ -172,9 +156,8 @@ contract OrderBook is IOrderBook {
         if (price  == 0) revert ZeroPrice();
         if (tokenIn == tokenOut) revert SameToken();
 
-        if (!tokenRegistry.isTokenAllowed(tokenIn)) revert TokenNotAllowed(tokenIn);
-        if (!tokenRegistry.isTokenAllowed(tokenOut)) revert TokenNotAllowed(tokenOut);
-        if (!tokenRegistry.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
+        if (!complianceManager.isTokenAllowed(tokenIn) || !complianceManager.isTokenAllowed(tokenOut)) revert TokenNotAllowed();
+        if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
 
         // Derive canonical pair and side
         bytes32 pairId = _getPairId(tokenIn, tokenOut);
@@ -226,14 +209,7 @@ contract OrderBook is IOrderBook {
         if (msg.sender != order.client && msg.sender != address(settlementEngine))
             revert NotOrderOwner(orderId);
 
-        order.active = false;
-        _removeFromBook(orderId, order.pairId, order.side, order.price);
-
-        uint256 unlockAmount = _computeLockAmount(order.side, order.amount, order.price);
-
-        custodian.unlockFunds(order.client, order.tokenOut, unlockAmount);
-
-        emit OrderCancelled(orderId, order.client);
+        _cancelOrder(orderId, order);
     }
 
 
@@ -337,11 +313,16 @@ contract OrderBook is IOrderBook {
 
         if (!maker.active) revert OrderNotActive(makerOrderId);
 
-        if (!tokenRegistry.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
-        if (!tokenRegistry.isUserAllowed(maker.client)) revert UserNotAllowed(maker.client);
+        if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
+        if (!complianceManager.isUserAllowed(maker.client)) {
+            _cancelOrder(makerOrderId, maker);
+            revert UserNotAllowed(maker.client);
+        } 
 
-        if (!tokenRegistry.isTokenAllowed(maker.tokenIn))  revert TokenNotAllowed(maker.tokenIn);
-        if (!tokenRegistry.isTokenAllowed(maker.tokenOut)) revert TokenNotAllowed(maker.tokenOut);
+        if (!complianceManager.isTokenAllowed(maker.tokenIn) || !complianceManager.isTokenAllowed(maker.tokenOut)) {
+            _cancelOrder(makerOrderId, maker);
+            revert TokenNotAllowed();
+        }
 
         uint256 amountToFulfill = takerAmount > maker.amount ? maker.amount : takerAmount;
         // If maker doesn't allow partials, taker must fulfill the entire order
@@ -371,16 +352,26 @@ contract OrderBook is IOrderBook {
         // Delegate directly to Settlement Engine
         settlementEngine.executeDirectTrade(makerOrderId, takerOrder);
     }
-
-
-    /**
-     * @notice Checks if the system is paused (circuit breaker)
-     */
-    function isSystemPaused() external view returns (bool) {
-        return paused;
-    }   
+ 
 
     //---------------------------------Internal helpers — RB tree + linked list management--------------------------------
+
+    /**
+     * @notice Cancel an order by ID
+     * @dev The private version of the cancelOrder function
+      * @param orderId ID of the order to cancel
+      * @param order Reference to the Order struct in storage
+     */
+    function _cancelOrder(uint256 orderId, Order storage order) internal {
+        order.active = false;
+
+        _removeFromBook(orderId, order.pairId, order.side, order.price);
+
+        uint256 unlockAmount = _computeLockAmount(order.side, order.amount, order.price);
+        custodian.unlockFunds(order.client, order.tokenOut, unlockAmount);
+
+        emit OrderCancelled(orderId, order.client);
+    }
 
     /**
      * @notice Insert an order into the order book

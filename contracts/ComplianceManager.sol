@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "../interfaces/ITokenRegistry.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "../interfaces/IComplianceManager.sol";
 
-contract TokenRegistry is ITokenRegistry {
+contract ComplianceManager is IComplianceManager, AccessControl, Pausable {
     
+    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+
     mapping(address => UserStatus) public userStatus;
     mapping(address => bool) public blacklistedTokens;
-
 
     //----------------------------------------------Events-----------------------------------------------------------
     event TokenBlacklisted(address indexed token);
@@ -15,12 +18,33 @@ contract TokenRegistry is ITokenRegistry {
     event UserStatusUpdated(address indexed user, UserStatus status);
 
 
+    //----------------------------------------------Constructor-----------------------------------------------------
+    constructor() {
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(OPERATOR_ROLE, msg.sender);
+    }
+
+
+    //----------------------------------------------Circuit Breaker-------------------------------------------------
+    function pause() external onlyRole(OPERATOR_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(OPERATOR_ROLE) {
+        _unpause();
+    }
+
+    function isSystemPaused() external view returns (bool) {
+        return paused();
+    }
+
+
     //----------------------------------------------Functions-------------------------------------------------------
     /**
      * @notice Blacklist a token, preventing it from being used in the system
      * @param _token Address of the token to blacklist
      */
-    function blacklistToken(address _token) external {
+    function blacklistToken(address _token) external onlyRole(OPERATOR_ROLE) {
         blacklistedTokens[_token] = true;
         emit TokenBlacklisted(_token);
     }
@@ -29,7 +53,7 @@ contract TokenRegistry is ITokenRegistry {
     * @notice Unblacklist a token, allowing it to be used in the system again
     * @param _token Address of the token to unblacklist
     */
-    function unblacklistToken(address _token) external {
+    function unblacklistToken(address _token) external onlyRole(OPERATOR_ROLE) {
         blacklistedTokens[_token] = false;
         emit TokenUnblacklisted(_token);
     }
@@ -48,7 +72,7 @@ contract TokenRegistry is ITokenRegistry {
      * @param _user Address of the user
      * @param _status New status for the user
      */
-    function setUserStatus(address _user, UserStatus _status) external {
+    function setUserStatus(address _user, UserStatus _status) external onlyRole(OPERATOR_ROLE) {
         userStatus[_user] = _status;
         emit UserStatusUpdated(_user, _status);
     }

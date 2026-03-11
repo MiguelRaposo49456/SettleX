@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../interfaces/ICustodian.sol";
-import "../interfaces/ITokenRegistry.sol";
+import "../interfaces/IComplianceManager.sol";
 import "../interfaces/IOrderbook.sol";
 
 
@@ -14,7 +14,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
     address public settlementEngine;
     IOrderBook public orderBook;
-    ITokenRegistry public immutable tokenRegistry;
+    IComplianceManager public immutable complianceManager;
 
     bool public initialized;
     address public immutable admin;
@@ -67,7 +67,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
     // Checks the OrderBook's paused state
     modifier whenNotPaused() {
-        if (orderBook.isSystemPaused()) revert SystemPaused();
+        if (complianceManager.isSystemPaused()) revert SystemPaused();
         _;
     }
 
@@ -83,10 +83,10 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
 
     //----------------------------------------------Constructor-----------------------------------------------------
-    constructor(address _tokenRegistry) {
-        if (_tokenRegistry == address(0)) revert ZeroAddress();
+    constructor(address _complianceManager) {
+        if (_complianceManager == address(0)) revert ZeroAddress();
 
-        tokenRegistry = ITokenRegistry(_tokenRegistry);
+        complianceManager = IComplianceManager(_complianceManager);
         admin = msg.sender;
     }
 
@@ -117,8 +117,8 @@ contract Custodian is ICustodian, ReentrancyGuard {
      */
     function deposit(address token, uint256 amount) external nonReentrant whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
-        if (!tokenRegistry.isTokenAllowed(token)) revert TokenNotAllowed(token);
-        if (!tokenRegistry.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
+        if (!complianceManager.isTokenAllowed(token)) revert TokenNotAllowed(token);
+        if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
 
         // Effects
         _balances[msg.sender][token] += amount;
@@ -140,7 +140,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
      */
     function withdraw(address token, uint256 amount) external nonReentrant whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
-        if (!tokenRegistry.canUserWithdraw(msg.sender)) revert UserCannotWithdraw(msg.sender);
+        if (!complianceManager.canUserWithdraw(msg.sender)) revert UserCannotWithdraw(msg.sender);
 
         uint256 available = _balances[msg.sender][token];
         if (available < amount) revert InsufficientBalance(available, amount);

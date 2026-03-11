@@ -38,7 +38,4 @@ interface IOrderBook {
 
     // Returns the full Order struct for a given ID
     function getOrder(uint256 orderId) external view returns (Order memory);
-
-    // Check if the system is paused
-    function isSystemPaused() external view returns (bool);
 }
