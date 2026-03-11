@@ -19,6 +19,10 @@ contract OrderBook is IOrderBook {
     uint8 public constant BUY  = 0;
     uint8 public constant SELL = 1;
 
+    // Reveal windows (in blocks)
+    uint256 public constant ORDER_REVEAL_WINDOW = 20; // ~4 min
+    uint256 public constant TAKE_REVEAL_WINDOW  = 10; // ~2 min — takes are more time-sensitive
+
     IComplianceManager public immutable complianceManager;
     ICustodian public custodian;
     ISettlementEngine public settlementEngine;
@@ -45,6 +49,21 @@ contract OrderBook is IOrderBook {
     mapping(bytes32 pairId => mapping(uint256 price => StructuredLinkedList.List)) private _sellOrders;
 
 
+    //-----------------------------------------------Commit-Reveal---------------------------------------------------
+    struct PendingCommit {
+        bytes32 commitHash;
+        address client;
+        uint256 commitBlock;
+        uint256 revealDeadline;
+        bool revealed;
+        bool expired;
+        CommitType commitType;
+    }
+
+    mapping(uint256 commitId => PendingCommit) private _pendingCommits;
+    uint256 private _nextCommitId; // starts at 0 since theres no need to use 0 as null in this case
+
+
     //----------------------------------------------Events-----------------------------------------------------------
     event OrderPlaced(
         uint256 indexed orderId,
@@ -61,21 +80,30 @@ contract OrderBook is IOrderBook {
     event OrderMatched(uint256 indexed makerOrderId, uint256 indexed takerOrderId);
     event OrderPartiallyFilled(uint256 indexed orderId, uint256 matchedAmount, uint256 remainingAmount);
     event Initialized(address custodian, address settlementEngine);
+    event Committed(uint256 indexed commitId, address indexed client, uint256 commitBlock);
+    event CommitExpired(uint256 indexed commitId, address indexed client);
     
     
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
+    error CommitAlreadyRevealed();
+    error CommitExpiredError(uint256 commitId);
+    error CommitHashMismatch();
+    error CommitNotFound(uint256 commitId);
     error InvalidSide();
     error NotAdmin();
+    error NotCommitOwner(uint256 commitId);
     error NotInitialized();
     error NotOrderOwner(uint256 orderId);
     error NotSettlementEngine();
     error OrderNotActive(uint256 orderId);
     error PartialFillNotAllowed();
+    error RevealWindowOpen(uint256 commitId);
     error SameToken();
     error SystemPaused();
     error TokenNotAllowed();
     error UserNotAllowed(address user);
+    error WrongCommitType(uint256 commitId);
     error ZeroAddress();
     error ZeroAmount();
     error ZeroPrice();
@@ -129,7 +157,152 @@ contract OrderBook is IOrderBook {
     }
 
 
-    //----------------------------------------------Functions-------------------------------------------------------
+    //----------------------------------------------Functions Commit-Reveal-------------------------------------------
+    /**
+     * @notice Phase 1 (order) — submit a hash of your order without revealing its contents
+     * @dev Compute off-chain the hash of the intended operation with the correct parameters and a secret salt
+     * @param commitHash Hash of the order parameters + secret salt
+     * @return commitId ID to reference in revealOrder()
+     */
+    function commit(bytes32 commitHash, CommitType commitType) external whenNotPaused whenInitialized returns (uint256 commitId) {
+        commitId = _nextCommitId++;
+
+        uint256 revealWindow = commitType == CommitType.Order ? ORDER_REVEAL_WINDOW : TAKE_REVEAL_WINDOW;
+
+        _pendingCommits[commitId] = PendingCommit({
+            commitHash: commitHash,
+            client: msg.sender,
+            commitBlock: block.number,
+            revealDeadline: block.number + revealWindow,
+            revealed: false,
+            expired: false,
+            commitType: commitType
+        });
+
+        emit Committed(commitId, msg.sender, block.number);
+    }
+
+     /**
+     * @notice Phase 2 (order) — reveal order parameters that match your earlier commit
+     * @dev The order enters the CLOB with commitBlock as its time-priority, NOT the
+     *         current block — this is what makes front-running ineffective.
+     * @param  commitId ID returned by commit()
+     * @param  tokenIn Token the client wants to receive
+     * @param  tokenOut Token the client is giving
+     * @param  price Quote tokens per base token, scaled by PRICE_PRECISION
+     * @param  amount Amount of baseToken to buy or sell
+     * @param  side BUY (0) or SELL (1)
+     * @param  partialAllowed Whether partial fills are acceptable
+     * @param  salt Secret random value used when computing the commit hash
+     */
+    function revealOrder(
+        uint256 commitId,
+        address tokenIn,
+        address tokenOut,
+        uint256 price,
+        uint256 amount,
+        uint8 side,
+        bool partialAllowed,
+        bytes32 salt
+    ) external whenNotPaused whenInitialized {
+        PendingCommit storage pending = _pendingCommits[commitId];
+
+        if (pending.client == address(0)) revert CommitNotFound(commitId);
+        if (msg.sender != pending.client) revert NotCommitOwner(commitId);
+        if (pending.commitType != CommitType.Order) revert WrongCommitType(commitId);
+        if (pending.revealed) revert CommitAlreadyRevealed();
+        if (block.number > pending.revealDeadline) {
+            pending.expired = true;
+            revert CommitExpiredError(commitId);
+        }
+
+        // Hash verification
+        bytes32 expectedHash = keccak256(abi.encodePacked(
+            msg.sender,
+            tokenIn,
+            tokenOut,
+            price,
+            amount,
+            side,
+            partialAllowed,
+            salt
+        ));
+        if (expectedHash != pending.commitHash) revert CommitHashMismatch();
+
+        // Check Effect Interaction — mark as revealed before any external calls
+        pending.revealed = true;
+
+        // Input validation
+        if (amount == 0) revert ZeroAmount();
+        if (price  == 0) revert ZeroPrice();
+        if (tokenIn == tokenOut) revert SameToken();
+        if (side != BUY && side != SELL) revert InvalidSide();
+
+        if (!complianceManager.isTokenAllowed(tokenIn) || !complianceManager.isTokenAllowed(tokenOut))
+            revert TokenNotAllowed();
+        if (!complianceManager.isUserAllowed(msg.sender))
+            revert UserNotAllowed(msg.sender);
+
+        _placeOrder(tokenIn, tokenOut, price, amount, side, partialAllowed, pending.commitBlock);
+    }
+    
+    /**
+     * @notice Phase 2 (take) — reveal take parameters that match your earlier commit.
+     * @param  commitId     ID returned by commit()
+     * @param  makerOrderId ID of the maker order to fill
+     * @param  takerAmount  Amount to fill
+     * @param  salt         Secret random value used when computing the commit hash
+     */
+    function revealTake(
+        uint256 commitId,
+        uint256 makerOrderId,
+        uint256 takerAmount,
+        bytes32 salt
+    ) external whenNotPaused whenInitialized {
+        PendingCommit storage pending = _pendingCommits[commitId];
+
+        if (pending.client == address(0)) revert CommitNotFound(commitId);
+        if (msg.sender != pending.client) revert NotCommitOwner(commitId);
+        if (pending.commitType != CommitType.Take) revert WrongCommitType(commitId);
+        if (pending.revealed) revert CommitAlreadyRevealed();
+        if (block.number > pending.revealDeadline) {
+            pending.expired = true;
+            revert CommitExpiredError(commitId);
+        }
+
+        // Hash verification
+        bytes32 expectedHash = keccak256(abi.encodePacked(
+            msg.sender,
+            makerOrderId,
+            takerAmount,
+            salt
+        ));
+        if (expectedHash != pending.commitHash) revert CommitHashMismatch();
+
+        // Check Effect Interaction — mark as revealed before any external calls
+        pending.revealed = true;
+
+        _takeOrder(makerOrderId, takerAmount, pending.commitBlock);
+    }
+
+
+    /**
+     * @notice Expire a commit whose reveal window has passed without a reveal.
+     * @param  commitId  The commit to expire
+     */
+    function expireCommit(uint256 commitId) external {
+        PendingCommit storage pending = _pendingCommits[commitId];
+
+        if (pending.client == address(0)) revert CommitNotFound(commitId);
+        if (pending.revealed) revert CommitAlreadyRevealed();
+        if (pending.expired) revert CommitExpiredError(commitId);
+        if (block.number <= pending.revealDeadline) revert RevealWindowOpen(commitId);
+
+        pending.expired = true;
+        emit CommitExpired(commitId, pending.client);
+    }
+
+    //----------------------------------------------Orderbook Functions-----------------------------------------------
     /**
      * @notice Place a new order
      * @dev Flow:
@@ -144,21 +317,15 @@ contract OrderBook is IOrderBook {
      * @param partialAllowed Whether partial fills are acceptable
      * @return orderId       ID of the stored order, or 0 if fully matched immediately
      */
-    function placeOrder(
+    function _placeOrder(
         address tokenIn,
         address tokenOut,
         uint256 price,
         uint256 amount,
         uint8 side,
-        bool partialAllowed
-    ) external whenNotPaused whenInitialized returns (uint256 orderId) {
-        if (amount == 0) revert ZeroAmount();
-        if (price  == 0) revert ZeroPrice();
-        if (tokenIn == tokenOut) revert SameToken();
-
-        if (!complianceManager.isTokenAllowed(tokenIn) || !complianceManager.isTokenAllowed(tokenOut)) revert TokenNotAllowed();
-        if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
-
+        bool partialAllowed,
+        uint256 commitBlock
+    ) internal returns (uint256 orderId) {
         // Derive canonical pair and side
         bytes32 pairId = _getPairId(tokenIn, tokenOut);
 
@@ -178,7 +345,7 @@ contract OrderBook is IOrderBook {
             amount: amount,
             side: side,
             active: true,
-            timestamp: block.timestamp,
+            block: commitBlock,
             partialAllowed: partialAllowed
         });
 
@@ -195,6 +362,51 @@ contract OrderBook is IOrderBook {
         );
 
         emit OrderPlaced(orderId, msg.sender, pairId, tokenIn, tokenOut, price, remainingAmount, side, partialAllowed);
+    }
+
+    function _takeOrder(uint256 makerOrderId, uint256 takerAmount, uint256 commitBlock) internal {
+        Order storage maker = _orders[makerOrderId];
+
+        if (!maker.active) revert OrderNotActive(makerOrderId);
+
+        if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
+        if (!complianceManager.isUserAllowed(maker.client)) {
+            _cancelOrder(makerOrderId, maker);
+            revert UserNotAllowed(maker.client);
+        } 
+
+        if (!complianceManager.isTokenAllowed(maker.tokenIn) || !complianceManager.isTokenAllowed(maker.tokenOut)) {
+            _cancelOrder(makerOrderId, maker);
+            revert TokenNotAllowed();
+        }
+
+        uint256 amountToFulfill = takerAmount > maker.amount ? maker.amount : takerAmount;
+        // If maker doesn't allow partials, taker must fulfill the entire order
+        if (!maker.partialAllowed && amountToFulfill < maker.amount) revert PartialFillNotAllowed();
+
+        uint8 takerSide = maker.side == BUY ? SELL : BUY;
+
+        // Lock taker funds
+        uint256 lockAmount = _computeLockAmount(takerSide, amountToFulfill, maker.price);
+        custodian.lockFunds(msg.sender, maker.tokenIn, lockAmount);
+
+        // Build taker order as a memory struct — never stored in the book
+        IOrderBook.Order memory takerOrder = IOrderBook.Order({
+            id:             0,
+            client:         msg.sender,
+            pairId:         maker.pairId,
+            tokenIn:        maker.tokenOut,
+            tokenOut:       maker.tokenIn,
+            price:          maker.price,
+            amount:         amountToFulfill,
+            side:           takerSide,
+            active:         true,
+            block:          commitBlock,
+            partialAllowed: false
+        });
+
+        // Delegate directly to Settlement Engine
+        settlementEngine.executeDirectTrade(makerOrderId, takerOrder);
     }
 
     /**
@@ -307,55 +519,9 @@ contract OrderBook is IOrderBook {
             if (!matchFoundAtLevel) break;
         }
     }
-
-    function takeOrder(uint256 makerOrderId, uint256 takerAmount) external whenNotPaused whenInitialized {
-        Order storage maker = _orders[makerOrderId];
-
-        if (!maker.active) revert OrderNotActive(makerOrderId);
-
-        if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
-        if (!complianceManager.isUserAllowed(maker.client)) {
-            _cancelOrder(makerOrderId, maker);
-            revert UserNotAllowed(maker.client);
-        } 
-
-        if (!complianceManager.isTokenAllowed(maker.tokenIn) || !complianceManager.isTokenAllowed(maker.tokenOut)) {
-            _cancelOrder(makerOrderId, maker);
-            revert TokenNotAllowed();
-        }
-
-        uint256 amountToFulfill = takerAmount > maker.amount ? maker.amount : takerAmount;
-        // If maker doesn't allow partials, taker must fulfill the entire order
-        if (!maker.partialAllowed && amountToFulfill < maker.amount) revert PartialFillNotAllowed();
-
-        uint8 takerSide = maker.side == BUY ? SELL : BUY;
-
-        // Lock taker funds
-        uint256 lockAmount = _computeLockAmount(takerSide, amountToFulfill, maker.price);
-        custodian.lockFunds(msg.sender, maker.tokenIn, lockAmount);
-
-        // Build taker order as a memory struct — never stored in the book
-        IOrderBook.Order memory takerOrder = IOrderBook.Order({
-            id:             0,
-            client:         msg.sender,
-            pairId:         maker.pairId,
-            tokenIn:        maker.tokenOut,
-            tokenOut:       maker.tokenIn,
-            price:          maker.price,
-            amount:         amountToFulfill,
-            side:           takerSide,
-            active:         true,
-            timestamp:      block.timestamp,
-            partialAllowed: false
-        });
-
-        // Delegate directly to Settlement Engine
-        settlementEngine.executeDirectTrade(makerOrderId, takerOrder);
-    }
  
 
     //---------------------------------Internal helpers — RB tree + linked list management--------------------------------
-
     /**
      * @notice Cancel an order by ID
      * @dev The private version of the cancelOrder function
