@@ -12,6 +12,8 @@ import "../interfaces/IOrderbook.sol";
 contract Custodian is ICustodian, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    address public constant ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
     address public settlementEngine;
     IOrderBook public orderBook;
     IComplianceManager public immutable complianceManager;
@@ -37,6 +39,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
+    error ETHTransferFailed();
     error NotAdmin();
     error NotInitialized();
     error NotSettlementEngine();
@@ -155,6 +158,47 @@ contract Custodian is ICustodian, ReentrancyGuard {
     }
 
 
+    //----------------------------------------------ETH Functions---------------------------------------------------
+    /**
+     * @notice Deposit native ETH into the vault, increasing available ETH balance
+     * @dev Same compliance checks as ERC20 deposits apply.
+     */
+    function depositETH() external payable nonReentrant whenNotPaused whenInitialized {
+        if (msg.value == 0) revert ZeroAmount();
+        if (!complianceManager.isTokenAllowed(ETH)) revert TokenNotAllowed(ETH);
+        if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
+
+        // Effects only — ETH is already in the contract via msg.value
+        _balances[msg.sender][ETH] += msg.value;
+
+        emit Deposited(msg.sender, ETH, msg.value);
+    }
+
+
+    /**
+     * @notice Withdraw native ETH from the vault
+     * @dev Uses call{value} instead of transfer to avoid gas stipend issues.
+     *      Same compliance checks as ERC20 withdrawals apply.
+     * @param amount Amount of ETH to withdraw (in wei)
+     */
+    function withdrawETH(uint256 amount) external nonReentrant whenNotPaused whenInitialized {
+        if (amount == 0) revert ZeroAmount();
+        if (!complianceManager.canUserWithdraw(msg.sender)) revert UserCannotWithdraw(msg.sender);
+
+        uint256 available = _balances[msg.sender][ETH];
+        if (available < amount) revert InsufficientBalance(available, amount);
+
+        // Effects
+        _balances[msg.sender][ETH] = available - amount;
+
+        // Interactions — low-level call is the safe way to send ETH post EIP-1884
+        (bool success, ) = msg.sender.call{value: amount}("");
+        if (!success) revert ETHTransferFailed();
+
+        emit Withdrawn(msg.sender, ETH, amount);
+    }
+
+
     /**
      * @notice Lock funds for a pending order, moving them from available to locked
      * @dev Called by the Orderbook when an order is submitted
@@ -247,5 +291,14 @@ contract Custodian is ICustodian, ReentrancyGuard {
     function fullBalanceOf(address client, address token) external view returns (uint256 available, uint256 locked) {
         available = _balances[client][token];
         locked = _lockedBalances[client][token];
+    }
+
+    //----------------------------------------------- Fallback -----------------------------------------------------
+    /**
+     * @notice Reject direct ETH transfers — use depositETH() instead
+     * @dev This prevents accidental ETH sends from being lost
+     */
+    receive() external payable {
+        revert("Use depositETH()");
     }
 }
