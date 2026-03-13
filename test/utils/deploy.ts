@@ -1,5 +1,3 @@
-import { network } from "hardhat";
-
 export async function deploySystem(ethers: any) {
     const [admin, client1, client2] = await ethers.getSigners();
 

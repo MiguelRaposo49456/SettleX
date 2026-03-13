@@ -10,20 +10,30 @@ const UserStatus = {
     Blacklisted: 2
 };
 
+const OPERATOR_ROLE = ethers.keccak256(ethers.toUtf8Bytes("OPERATOR_ROLE"));
+
+// Canonical sentinel address for native ETH
+const ETH_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+
 describe("Custodian", function () {
-    let admin: any, client1: any, client2: any;
+    let admin: any, operator: any, client1: any, client2: any;
     let complianceManager: any, orderbook: any, custodian: any, settlementEngine: any;
     let tokenA: any, tokenB: any;
     let orderbookSigner: any, settlementEngineSigner: any;
 
     const DEPOSIT_AMOUNT = ethers.parseUnits("100", 18);
     const LOCK_AMOUNT = ethers.parseUnits("50", 18);
+    const ETH_AMOUNT = ethers.parseEther("1.0");
 
     beforeEach(async function () {
-        ({ admin, client1, client2, complianceManager, orderbook, custodian, settlementEngine, tokenA, tokenB } 
+        ({ admin, client1, client2, complianceManager, orderbook, custodian, settlementEngine, tokenA, tokenB }
             = await deploySystem(ethers));
 
-        // Create the Impersonated Signers for the contracts
+        // Assign operator — admin is signers[0], operator is signers[1]
+        [,operator] = await ethers.getSigners();
+        await complianceManager.connect(admin).grantRole(OPERATOR_ROLE, operator.address);
+
+        // Impersonate contracts
         orderbookSigner = await ethers.getImpersonatedSigner(orderbook.target);
         settlementEngineSigner = await ethers.getImpersonatedSigner(settlementEngine.target);
 
@@ -31,16 +41,20 @@ describe("Custodian", function () {
         await ethers.provider.send("hardhat_setBalance", [orderbook.target, ethers.toQuantity(ethers.parseEther("1.0"))]);
         await ethers.provider.send("hardhat_setBalance", [settlementEngine.target, ethers.toQuantity(ethers.parseEther("1.0"))]);
 
-        // Mint tokens to clients
+        // Mint ERC20 tokens to clients
         await tokenA.mint(client1.address, ethers.parseUnits("1000", 18));
         await tokenB.mint(client2.address, ethers.parseUnits("1000", 18));
 
-        // Approve custodian to spend tokens
+        // Approve custodian to spend ERC20 tokens
         await tokenA.connect(client1).approve(custodian.target, ethers.parseUnits("1000", 18));
         await tokenB.connect(client2).approve(custodian.target, ethers.parseUnits("1000", 18));
+
+        // Fund clients with ETH for ETH tests
+        await ethers.provider.send("hardhat_setBalance", [client1.address, ethers.toQuantity(ethers.parseEther("10.0"))]);
+        await ethers.provider.send("hardhat_setBalance", [client2.address, ethers.toQuantity(ethers.parseEther("10.0"))]);
     });
 
-    //---------------------------------------Deposit---------------------------------------
+    //---------------------------------------Deposit ERC20---------------------------------------
 
     describe("deposit()", function () {
 
@@ -55,15 +69,21 @@ describe("Custodian", function () {
         });
 
         it("should revert if token is blacklisted", async function () {
-            await complianceManager.blacklistToken(tokenA.target);
+            await complianceManager.connect(operator).blacklistToken(tokenA.target);
             await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
                 .to.be.revertedWithCustomError(custodian, "TokenNotAllowed");
         });
 
         it("should revert if user is blacklisted", async function () {
-            await complianceManager.blacklistUser(client1.address);
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.Blacklisted);
             await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
                 .to.be.revertedWithCustomError(custodian, "UserNotAllowed");
+        });
+
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
         });
 
         it("should emit Deposited event", async function () {
@@ -73,7 +93,7 @@ describe("Custodian", function () {
         });
     });
 
-    //---------------------------------------Withdraw--------------------------------------
+    //---------------------------------------Withdraw ERC20--------------------------------------
 
     describe("withdraw()", function () {
 
@@ -98,21 +118,120 @@ describe("Custodian", function () {
         });
 
         it("should revert if user is fully blacklisted", async function () {
-            await complianceManager.blacklistUser(client1.address);
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.Blacklisted);
             await expect(custodian.connect(client1).withdraw(tokenA.target, DEPOSIT_AMOUNT))
                 .to.be.revertedWithCustomError(custodian, "UserCannotWithdraw");
         });
 
         it("should allow withdrawal if user is BlacklistedWithWithdrawal", async function () {
-            await complianceManager.setUserStatus(client1.address, UserStatus.BlacklistedWithWithdrawal);
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.BlacklistedWithWithdrawal);
             await custodian.connect(client1).withdraw(tokenA.target, DEPOSIT_AMOUNT);
             expect(await custodian.balanceOf(client1.address, tokenA.target)).to.equal(0);
+        });
+
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(client1).withdraw(tokenA.target, DEPOSIT_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
         });
 
         it("should emit Withdrawn event", async function () {
             await expect(custodian.connect(client1).withdraw(tokenA.target, DEPOSIT_AMOUNT))
                 .to.emit(custodian, "Withdrawn")
                 .withArgs(client1.address, tokenA.target, DEPOSIT_AMOUNT);
+        });
+    });
+
+    //---------------------------------------Deposit ETH---------------------------------------
+
+    describe("depositETH()", function () {
+
+        it("should deposit ETH and increase available ETH balance", async function () {
+            await custodian.connect(client1).depositETH({ value: ETH_AMOUNT });
+            expect(await custodian.balanceOf(client1.address, ETH_ADDRESS)).to.equal(ETH_AMOUNT);
+        });
+
+        it("should revert on zero amount", async function () {
+            await expect(custodian.connect(client1).depositETH({ value: 0 }))
+                .to.be.revertedWithCustomError(custodian, "ZeroAmount");
+        });
+
+        it("should revert if ETH is blacklisted", async function () {
+            await complianceManager.connect(operator).blacklistToken(ETH_ADDRESS);
+            await expect(custodian.connect(client1).depositETH({ value: ETH_AMOUNT }))
+                .to.be.revertedWithCustomError(custodian, "TokenNotAllowed");
+        });
+
+        it("should revert if user is blacklisted", async function () {
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.Blacklisted);
+            await expect(custodian.connect(client1).depositETH({ value: ETH_AMOUNT }))
+                .to.be.revertedWithCustomError(custodian, "UserNotAllowed");
+        });
+
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(client1).depositETH({ value: ETH_AMOUNT }))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
+        });
+
+        it("should revert on direct ETH transfer", async function () {
+            await expect(client1.sendTransaction({ to: custodian.target, value: ETH_AMOUNT }))
+                .to.be.revertedWith("Use depositETH()");
+});
+
+        it("should emit Deposited event", async function () {
+            await expect(custodian.connect(client1).depositETH({ value: ETH_AMOUNT }))
+                .to.emit(custodian, "Deposited")
+                .withArgs(client1.address, ETH_ADDRESS, ETH_AMOUNT);
+        });
+    });
+
+    //---------------------------------------Withdraw ETH--------------------------------------
+
+    describe("withdrawETH()", function () {
+
+        beforeEach(async function () {
+            await custodian.connect(client1).depositETH({ value: ETH_AMOUNT });
+        });
+
+        it("should withdraw ETH and decrease available ETH balance", async function () {
+            await custodian.connect(client1).withdrawETH(ETH_AMOUNT);
+            expect(await custodian.balanceOf(client1.address, ETH_ADDRESS)).to.equal(0);
+        });
+
+        it("should revert on zero amount", async function () {
+            await expect(custodian.connect(client1).withdrawETH(0))
+                .to.be.revertedWithCustomError(custodian, "ZeroAmount");
+        });
+
+        it("should revert if withdrawing more than available", async function () {
+            const tooMuch = ethers.parseEther("2.0");
+            await expect(custodian.connect(client1).withdrawETH(tooMuch))
+                .to.be.revertedWithCustomError(custodian, "InsufficientBalance");
+        });
+
+        it("should revert if user is fully blacklisted", async function () {
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.Blacklisted);
+            await expect(custodian.connect(client1).withdrawETH(ETH_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "UserCannotWithdraw");
+        });
+
+        it("should allow withdrawal if user is BlacklistedWithWithdrawal", async function () {
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.BlacklistedWithWithdrawal);
+            await custodian.connect(client1).withdrawETH(ETH_AMOUNT);
+            expect(await custodian.balanceOf(client1.address, ETH_ADDRESS)).to.equal(0);
+        });
+
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(client1).withdrawETH(ETH_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
+        });
+
+        it("should emit Withdrawn event", async function () {
+            await expect(custodian.connect(client1).withdrawETH(ETH_AMOUNT))
+                .to.emit(custodian, "Withdrawn")
+                .withArgs(client1.address, ETH_ADDRESS, ETH_AMOUNT);
         });
     });
 
@@ -144,6 +263,12 @@ describe("Custodian", function () {
         it("should revert on zero amount", async function () {
             await expect(custodian.connect(orderbookSigner).lockFunds(client1.address, tokenA.target, 0))
                 .to.be.revertedWithCustomError(custodian, "ZeroAmount");
+        });
+
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(orderbookSigner).lockFunds(client1.address, tokenA.target, LOCK_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
         });
 
         it("should emit FundsLocked event", async function () {
@@ -182,6 +307,12 @@ describe("Custodian", function () {
         it("should revert on zero amount", async function () {
             await expect(custodian.connect(orderbookSigner).unlockFunds(client1.address, tokenA.target, 0))
                 .to.be.revertedWithCustomError(custodian, "ZeroAmount");
+        });
+
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(orderbookSigner).unlockFunds(client1.address, tokenA.target, LOCK_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
         });
 
         it("should emit FundsUnlocked event", async function () {
@@ -225,6 +356,13 @@ describe("Custodian", function () {
             await expect(custodian.connect(settlementEngineSigner).internalTransfer(
                 client1.address, client2.address, tokenA.target, 0
             )).to.be.revertedWithCustomError(custodian, "ZeroAmount");
+        });
+
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(settlementEngineSigner).internalTransfer(
+                client1.address, client2.address, tokenA.target, LOCK_AMOUNT
+            )).to.be.revertedWithCustomError(custodian, "SystemPaused");
         });
 
         it("should emit InternalTransfer event", async function () {
