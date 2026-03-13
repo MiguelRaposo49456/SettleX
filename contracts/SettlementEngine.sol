@@ -19,16 +19,16 @@ contract SettlementEngine is ISettlementEngine {
     //----------------------------------------------Events-----------------------------------------------------------
     event TradeExecuted(uint256 indexed orderIdMaker, uint256 indexed orderIdTaker, uint256 executedAmount);
     event Initialized(address orderbook, address custodian);
+    event InsufficientLockedBalance(uint256 lockedBalance, uint256 requiredAmount);
+    event TokenBlacklisted();
+    event UserBlacklisted();
 
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
     error NotAdmin();
     error NotInitialized();
-    error InsufficientLockedBalance(uint256 lockedBalance, uint256 requiredAmount);
     error NotOrderBook();
     error SystemPaused();
-    error TokenNotAllowed();
-    error UserNotAllowed();
     error ZeroAddress();
 
     //---------------------------------------------Modifiers--------------------------------------------------------
@@ -126,21 +126,24 @@ contract SettlementEngine is ISettlementEngine {
             orderBook.cancelOrder(makerOrderId);
             if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-            revert TokenNotAllowed();
+            emit TokenBlacklisted();
+            return;
         }
 
         // Check maker user — if blacklisted cancel maker only, taker order stays active
         if (!complianceManager.isUserAllowed(makerOrder.client)) {
             orderBook.cancelOrder(makerOrderId);
             if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-            revert UserNotAllowed();
+            emit UserBlacklisted();
+            return;
         }
 
         // Check taker user — if blacklisted cancel taker only, maker order stays active
         if (!complianceManager.isUserAllowed(takerOrder.client)) {
             if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-            revert UserNotAllowed();
+            emit UserBlacklisted();
+            return;
         }
 
         // Determine executed amount — minimum of both sides
@@ -153,7 +156,8 @@ contract SettlementEngine is ISettlementEngine {
         if (makerLocked < executedAmount) {
             orderBook.cancelOrder(makerOrderId);
             if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-            revert InsufficientLockedBalance(makerLocked, executedAmount);
+            emit InsufficientLockedBalance(makerLocked, executedAmount);
+            return;
         }
 
         // Check taker has enough locked funds for the executed amount
@@ -161,12 +165,13 @@ contract SettlementEngine is ISettlementEngine {
         if (takerLocked < executedAmount) {
             if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerLocked);
-            revert InsufficientLockedBalance(takerLocked, executedAmount);
+            emit InsufficientLockedBalance(takerLocked, executedAmount);
+            return;
         }
 
         // Execute both legs of the trade atomically
-        custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenIn, executedAmount);
-        custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenIn, executedAmount);
+        custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, executedAmount);
+        custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, executedAmount);
 
         // Update remaining amounts in the OrderBook
         // Each order's new remaining = old amount - executedAmount

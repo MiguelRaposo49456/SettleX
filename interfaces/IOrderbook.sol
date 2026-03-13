@@ -5,12 +5,22 @@ interface IOrderBook {
 
     enum CommitType { Order, Take }
 
+    struct PendingCommit {
+        bytes32 commitHash;
+        address client;
+        uint256 commitBlock;
+        uint256 revealDeadline;
+        bool revealed;
+        bool expired;
+        CommitType commitType;
+    }
+
     struct Order {
         uint256 id;             // Unique order ID
         address client;         // Trader who created the order
         bytes32 pairId;         // Canonical ID for the token pair (hash of tokenIn and tokenOut addresses)
-        address tokenIn;        // Token the user is buying
-        address tokenOut;       // Token the user is selling
+        address tokenIn;        // Token the user is recieving
+        address tokenOut;       // Token the user is giving
         uint256 price;          // Price expressed in tokenOut/tokenIn or the quote token for each base token like USDC per ETH
         uint256 amount;         // Amount of tokenIn the user wants to buy
         uint8 side;             // Buy or Sell side of the order
@@ -50,4 +60,6 @@ interface IOrderBook {
 
     // Returns the full Order struct for a given ID
     function getOrder(uint256 orderId) external view returns (Order memory);
+
+    function getPendingCommit(uint256 commitId) external view returns (PendingCommit memory);
 }

@@ -50,16 +50,6 @@ contract OrderBook is IOrderBook {
 
 
     //-----------------------------------------------Commit-Reveal---------------------------------------------------
-    struct PendingCommit {
-        bytes32 commitHash;
-        address client;
-        uint256 commitBlock;
-        uint256 revealDeadline;
-        bool revealed;
-        bool expired;
-        CommitType commitType;
-    }
-
     mapping(uint256 commitId => PendingCommit) private _pendingCommits;
     uint256 private _nextCommitId; // starts at 0 since theres no need to use 0 as null in this case
 
@@ -82,11 +72,14 @@ contract OrderBook is IOrderBook {
     event Initialized(address custodian, address settlementEngine);
     event Committed(uint256 indexed commitId, address indexed client, uint256 commitBlock);
     event CommitExpired(uint256 indexed commitId, address indexed client);
+    event MakerBlacklisted(uint256 indexed orderId, address indexed maker);
+    event TokenBlacklisted();
     
     
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
     error CommitAlreadyRevealed();
+    error CommitAndRevealOnSameBlock();
     error CommitExpiredError(uint256 commitId);
     error CommitHashMismatch();
     error CommitNotFound(uint256 commitId);
@@ -211,6 +204,7 @@ contract OrderBook is IOrderBook {
         if (msg.sender != pending.client) revert NotCommitOwner(commitId);
         if (pending.commitType != CommitType.Order) revert WrongCommitType(commitId);
         if (pending.revealed) revert CommitAlreadyRevealed();
+        if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
         if (block.number > pending.revealDeadline) {
             pending.expired = true;
             revert CommitExpiredError(commitId);
@@ -265,6 +259,7 @@ contract OrderBook is IOrderBook {
         if (msg.sender != pending.client) revert NotCommitOwner(commitId);
         if (pending.commitType != CommitType.Take) revert WrongCommitType(commitId);
         if (pending.revealed) revert CommitAlreadyRevealed();
+        if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
         if (block.number > pending.revealDeadline) {
             pending.expired = true;
             revert CommitExpiredError(commitId);
@@ -372,12 +367,14 @@ contract OrderBook is IOrderBook {
         if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
         if (!complianceManager.isUserAllowed(maker.client)) {
             _cancelOrder(makerOrderId, maker);
-            revert UserNotAllowed(maker.client);
+            emit MakerBlacklisted(makerOrderId, maker.client);
+            return;
         } 
 
         if (!complianceManager.isTokenAllowed(maker.tokenIn) || !complianceManager.isTokenAllowed(maker.tokenOut)) {
             _cancelOrder(makerOrderId, maker);
-            revert TokenNotAllowed();
+            emit TokenBlacklisted();
+            return;
         }
 
         uint256 amountToFulfill = takerAmount > maker.amount ? maker.amount : takerAmount;
@@ -641,5 +638,10 @@ contract OrderBook is IOrderBook {
     // Get an order by ID
     function getOrder(uint256 orderId) external view returns (Order memory) {
         return _orders[orderId];
+    }
+
+    // Get pending commit details by ID
+    function getPendingCommit(uint256 commitId) external view returns (PendingCommit memory) {
+        return _pendingCommits[commitId];
     }
 }
