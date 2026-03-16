@@ -19,14 +19,14 @@ interface IOrderBook {
         uint256 id;             // Unique order ID
         address client;         // Trader who created the order
         bytes32 pairId;         // Canonical ID for the token pair (hash of tokenIn and tokenOut addresses)
-        address tokenIn;        // Token the user is recieving
+        uint8 side;             // Buy or Sell side of the order
+        bool active;            // Whether the order is active or has been filled/cancelled
+        bool partialAllowed;    // Whether the order can be partially filled
+        address tokenIn;        // Token the user is receiving
         address tokenOut;       // Token the user is giving
         uint256 price;          // Price expressed in tokenOut/tokenIn or the quote token for each base token like USDC per ETH
         uint256 amount;         // Amount of tokenIn the user wants to buy
-        uint8 side;             // Buy or Sell side of the order
-        bool active;            // Whether the order is active or has been filled/cancelled
         uint256 block;          // Block number when the order was created
-        bool partialAllowed;    // Whether the order can be partially filled
     }
 
     // Allows a user to submit a commit for either a place order or a take order
