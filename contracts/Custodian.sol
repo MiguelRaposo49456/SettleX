@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import "@uniswap/v2-periphery/contracts/interfaces/IWETH.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../interfaces/ICustodian.sol";
 import "../interfaces/IComplianceManager.sol";
 import "../interfaces/IOrderbook.sol";
+import "../interfaces/mocks/IMockLendingPool.sol";
 
 
 contract Custodian is ICustodian, ReentrancyGuard {
@@ -17,6 +19,8 @@ contract Custodian is ICustodian, ReentrancyGuard {
     address public settlementEngine;
     IOrderBook public orderBook;
     IComplianceManager public immutable complianceManager;
+    IMockLendingPool public immutable lendingPool;
+    IWETH public immutable weth;
 
     bool public initialized;
     address public immutable admin;
@@ -28,6 +32,20 @@ contract Custodian is ICustodian, ReentrancyGuard {
     mapping(address client => mapping(address token => uint256 amount)) private _lockedBalances;
 
 
+    //---------------------------------------------Withdrawal Queue--------------------------------------------------
+    uint256 public constant MAX_QUEUE_PROCESS = 5;
+
+    struct WithdrawalRequest {
+        address client;
+        address token;
+        uint256 amount;
+        uint256 requestedAt;
+    }
+
+    WithdrawalRequest[] public withdrawalQueue;
+    uint256 public queueHead;
+
+
     //----------------------------------------------Events-----------------------------------------------------------
     event Deposited(address indexed client, address indexed token, uint256 amount);
     event Withdrawn(address indexed client, address indexed token, uint256 amount);
@@ -35,6 +53,8 @@ contract Custodian is ICustodian, ReentrancyGuard {
     event FundsUnlocked(address indexed client, address indexed token, uint256 amount);
     event InternalTransfer(address indexed from, address indexed to, address indexed token, uint256 amount);
     event Initialized(address orderbook, address settlementEngine);
+    event WithdrawalQueued(address indexed client, address indexed token, uint256 amount);
+    event WithdrawalProcessed(address indexed client, address indexed token, uint256 amount);
 
 
     //----------------------------------------------Errors-----------------------------------------------------------
@@ -86,10 +106,14 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
 
     //----------------------------------------------Constructor-----------------------------------------------------
-    constructor(address _complianceManager) {
+    constructor(address _complianceManager, address _lendingPool, address _weth) {
         if (_complianceManager == address(0)) revert ZeroAddress();
+        if (_lendingPool == address(0)) revert ZeroAddress();
+        if (_weth == address(0)) revert ZeroAddress();
 
         complianceManager = IComplianceManager(_complianceManager);
+        lendingPool = IMockLendingPool(_lendingPool);
+        weth = IWETH(_weth);
         admin = msg.sender;
     }
 
@@ -115,7 +139,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
     /**
      * @notice Deposit tokens into the vault, increasing available balance
      * @dev Clients can only deposit allowed tokens, needing to allow the transfer on their behalf first.
-     * @param token  Address of the ERC-20 token to deposit
+     * @param token  Address of the token to deposit
      * @param amount Amount to deposit
      */
     function deposit(address token, uint256 amount) external nonReentrant whenNotPaused whenInitialized {
@@ -129,6 +153,15 @@ contract Custodian is ICustodian, ReentrancyGuard {
         // Interactions
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
+        // Supply to lending pool if token is supported
+        address aToken = lendingPool.getAToken(token);
+        if (aToken != address(0)) {
+            IERC20(token).approve(address(lendingPool), amount);
+            lendingPool.supply(token, amount, msg.sender);
+        }
+
+        _processWithdrawalQueue();
+
         emit Deposited(msg.sender, token, amount);
     }
 
@@ -138,7 +171,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @dev Locked funds cannot be withdrawn while their order is open
      *      Blacklisted users cannot withdraw (regulatory freeze)
      *      Pattern: Checks -> Effects -> Interactions
-     * @param token  Address of the ERC-20 token
+     * @param token Address of the token
      * @param amount Amount to withdraw
      */
     function withdraw(address token, uint256 amount) external nonReentrant whenNotPaused whenInitialized {
@@ -148,13 +181,23 @@ contract Custodian is ICustodian, ReentrancyGuard {
         uint256 available = _balances[msg.sender][token];
         if (available < amount) revert InsufficientBalance(available, amount);
 
+        _processWithdrawalQueue();
+
         // Effects
         _balances[msg.sender][token] = available - amount;
 
-        // Interactions
-        IERC20(token).safeTransfer(msg.sender, amount);
-
-        emit Withdrawn(msg.sender, token, amount);
+        address aToken = lendingPool.getAToken(token);
+        if (aToken != address(0)) {
+            bool success = _tryWithdraw(token, amount, msg.sender);
+            if (success) {
+                emit Withdrawn(msg.sender, token, amount);
+            } else {
+                _enqueue(msg.sender, token, amount);
+            }
+        } else {
+            IERC20(token).safeTransfer(msg.sender, amount);
+            emit Withdrawn(msg.sender, token, amount);
+        }
     }
 
 
@@ -170,6 +213,18 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
         // Effects only — ETH is already in the contract via msg.value
         _balances[msg.sender][ETH] += msg.value;
+
+        // Supply WETH to lending pool
+        address aToken = lendingPool.getAToken(address(weth));
+        if (aToken != address(0)) {
+            // Wrap ETH to WETH
+            weth.deposit{value: msg.value}();
+
+            IERC20(address(weth)).approve(address(lendingPool), msg.value);
+            lendingPool.supply(address(weth), msg.value, msg.sender);
+        }
+
+        _processWithdrawalQueue();
 
         emit Deposited(msg.sender, ETH, msg.value);
     }
@@ -188,14 +243,25 @@ contract Custodian is ICustodian, ReentrancyGuard {
         uint256 available = _balances[msg.sender][ETH];
         if (available < amount) revert InsufficientBalance(available, amount);
 
+        _processWithdrawalQueue();
+
         // Effects
         _balances[msg.sender][ETH] = available - amount;
 
-        // Interactions — low-level call is the safe way to send ETH post EIP-1884
-        (bool success, ) = msg.sender.call{value: amount}("");
-        if (!success) revert ETHTransferFailed();
-
-        emit Withdrawn(msg.sender, ETH, amount);
+        address aToken = lendingPool.getAToken(address(weth));
+        if (aToken != address(0)) {
+            bool succeed = _tryWithdraw(ETH, amount, msg.sender);
+            if (succeed) {
+                emit Withdrawn(msg.sender, ETH, amount);
+            } else {
+                _enqueue(msg.sender, ETH, amount);
+            }
+        } else {
+            // Interactions — low-level call is the safe way to send ETH post EIP-1884
+            (bool sent, ) = msg.sender.call{value: amount}("");
+            if (!sent) revert ETHTransferFailed();
+            emit Withdrawn(msg.sender, ETH, amount);
+        }
     }
 
 
@@ -269,12 +335,62 @@ contract Custodian is ICustodian, ReentrancyGuard {
         emit InternalTransfer(from, to, token, amount);
     }
 
+
+    //----------------------------------------------Withdraw Queue Functions---------------------------------------------
+    function _tryWithdraw(address token, uint256 amount, address recipient) internal returns (bool) {
+        if (token == ETH) {
+            try lendingPool.withdraw(address(weth), amount, address(this)) {
+                weth.withdraw(amount);
+                (bool sent, ) = recipient.call{value: amount}("");
+                if (!sent) revert ETHTransferFailed();
+                return true;
+            } catch {
+                return false;
+            }
+        } else {
+            try lendingPool.withdraw(token, amount, recipient) {
+                return true;
+            } catch {
+                return false;
+            }
+        }
+    }
+
+    function _processWithdrawalQueue() internal {
+        uint256 processed = 0;
+        while (queueHead < withdrawalQueue.length && processed < MAX_QUEUE_PROCESS) {
+            WithdrawalRequest storage req = withdrawalQueue[queueHead];
+            bool success = _tryWithdraw(req.token, req.amount, req.client);
+            if (!success) break;
+            queueHead++;
+            processed++;
+            emit WithdrawalProcessed(req.client, req.token, req.amount);
+        }
+    }
+
+    function _enqueue(address client, address token, uint256 amount) internal {
+        withdrawalQueue.push(WithdrawalRequest({
+            client: client,
+            token: token,
+            amount: amount,
+            requestedAt: block.timestamp
+        }));
+        emit WithdrawalQueued(client, token, amount);
+    }
+
+
     //----------------------------------------------- View Functions ----------------------------------------------------
 
     /**
      * @notice Available balance for a client and token
      */
     function balanceOf(address client, address token) external view returns (uint256) {
+        address aToken = lendingPool.getAToken(token == ETH ? address(weth) : token);
+        if (aToken != address(0)) {
+            // Real balance is in lending pool — includes yield
+            return lendingPool.balanceOf(token == ETH ? address(weth) : token, client);
+        }
+        // Token held directly in Custodian
         return _balances[client][token];
     }
 
@@ -299,6 +415,6 @@ contract Custodian is ICustodian, ReentrancyGuard {
      * @dev This prevents accidental ETH sends from being lost
      */
     receive() external payable {
-        revert("Use depositETH()");
+        if (msg.sender != address(weth)) revert("Use depositETH()");
     }
 }

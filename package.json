@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.4.0",
+    "@uniswap/v2-periphery": "^1.1.0-beta.0",
     "npm": "^11.11.1",
     "solidity-linked-list": "^6.5.0"
   }
