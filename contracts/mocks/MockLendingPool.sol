@@ -162,7 +162,7 @@ contract MockLendingPool is IMockLendingPool {
      * @param amount Amount to supply
      * @param user Address of the user supplying the tokens
      */
-    function supply(address token, uint256 amount, address user) external poolExists(token) {
+    function supply(address token, uint256 amount, address user) external poolExists(token) returns (uint256) {
         if (amount == 0) revert ZeroAmount();
 
         Pool storage pool = _pools[token];
@@ -180,6 +180,8 @@ contract MockLendingPool is IMockLendingPool {
         pool.aToken.mint(user, scaledAmount);
 
         emit Supplied(user, token, amount, scaledAmount);
+
+        return scaledAmount;
     }
 
     /**
@@ -187,12 +189,12 @@ contract MockLendingPool is IMockLendingPool {
      * @dev Updates the liquidity index before computing the actual amount.
      *      Actual amount = scaledBalance * currentIndex / RAY
      * @param token Underlying token to withdraw
-     * @param amount Amount of underlying to withdraw (not scaled)
+     * @param scaledAmount Amount of underlying to withdraw (not scaled)
      * @param user Address of the user withdrawing the tokens
      * @return Actual amount withdrawn
      */
-    function withdraw(address token, uint256 amount, address user) external poolExists(token) returns (uint256) {
-        if (amount == 0) revert ZeroAmount();
+    function withdraw(address token, uint256 scaledAmount, address user) external poolExists(token) returns (uint256) {
+        if (scaledAmount == 0) revert ZeroAmount();
 
         Pool storage pool = _pools[token];
 
@@ -200,22 +202,19 @@ contract MockLendingPool is IMockLendingPool {
         _updateIndex(token);
 
         uint256 scaledBalance = pool.scaledBalances[user];
-        uint256 actualBalance = (scaledBalance * pool.liquidityIndex) / RAY;
+        if (scaledBalance < scaledAmount) revert InsufficientBalance(scaledBalance, scaledAmount);
 
-        if (actualBalance < amount) revert InsufficientBalance(actualBalance, amount);
-
-        // Compute how many scaled tokens to withdraw
-        uint256 scaledToWithdraw = (amount * RAY) / pool.liquidityIndex;
-        pool.scaledBalances[user] -= scaledToWithdraw;
+        pool.scaledBalances[user] -= scaledAmount;
 
         // Burn aTokens
-        pool.aToken.burn(user, scaledToWithdraw);
+        pool.aToken.burn(user, scaledAmount);
 
-        IERC20(token).safeTransfer(user, amount);
+        uint256 actualAmount = (scaledAmount * pool.liquidityIndex) / RAY;
+        IERC20(token).safeTransfer(user, actualAmount);
 
-        emit Withdrawn(user, token, amount);
+        emit Withdrawn(user, token, actualAmount);
 
-        return amount;
+        return actualAmount;
     }
 
 
