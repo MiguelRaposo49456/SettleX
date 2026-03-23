@@ -127,6 +127,29 @@ describe("Custodian", function () {
                 .to.emit(custodian, "Deposited")
                 .withArgs(client1.address, tokenA.target, DEPOSIT_AMOUNT);
         });
+
+        it("should revert on zero amount", async function () {
+            await expect(custodian.connect(client1).deposit(tokenA.target, 0))
+                .to.be.revertedWithCustomError(custodian, "ZeroAmount");
+        });
+        
+        it("should revert if token is blacklisted", async function () {
+            await complianceManager.connect(operator).blacklistToken(tokenA.target);
+            await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "TokenNotAllowed");
+        });
+        
+        it("should revert if user is blacklisted", async function () {
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.Blacklisted);
+            await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "UserNotAllowed");
+        });
+        
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
+        });
     });
 
     //---------------------------------------Withdraw ERC20 (no lending pool)--------------------------------------
@@ -348,6 +371,29 @@ describe("Custodian", function () {
                 .to.emit(custodian, "Deposited")
                 .withArgs(client1.address, ETH_ADDRESS, ETH_AMOUNT);
         });
+
+        it("should revert on zero amount", async function () {
+            await expect(custodian.connect(client1).depositETH({ value: 0 }))
+                .to.be.revertedWithCustomError(custodian, "ZeroAmount");
+        });
+        
+        it("should revert if ETH is blacklisted", async function () {
+            await complianceManager.connect(operator).blacklistToken(ETH_ADDRESS);
+            await expect(custodian.connect(client1).depositETH({ value: ETH_AMOUNT }))
+                .to.be.revertedWithCustomError(custodian, "TokenNotAllowed");
+        });
+        
+        it("should revert if user is blacklisted", async function () {
+            await complianceManager.connect(operator).setUserStatus(client1.address, UserStatus.Blacklisted);
+            await expect(custodian.connect(client1).depositETH({ value: ETH_AMOUNT }))
+                .to.be.revertedWithCustomError(custodian, "UserNotAllowed");
+        });
+        
+        it("should revert when system is paused", async function () {
+            await complianceManager.connect(operator).pause();
+            await expect(custodian.connect(client1).depositETH({ value: ETH_AMOUNT }))
+                .to.be.revertedWithCustomError(custodian, "SystemPaused");
+        });
     });
 
     //---------------------------------------Withdraw ETH (no WETH pool)--------------------------------------
@@ -471,6 +517,11 @@ describe("Custodian", function () {
             await complianceManager.connect(operator).pause();
             await expect(custodian.connect(client1).withdraw(aWethAddress, scaledAmount, true))
                 .to.be.revertedWithCustomError(custodian, "SystemPaused");
+        });
+
+        it("should revert on zero amount", async function () {
+            await expect(custodian.connect(client1).withdraw(aWethAddress, 0n, false))
+                .to.be.revertedWithCustomError(custodian, "ZeroAmount");
         });
     });
 
@@ -667,6 +718,20 @@ describe("Custodian", function () {
             expect(available).to.equal(DEPOSIT_AMOUNT - LOCK_AMOUNT);
             expect(locked).to.equal(LOCK_AMOUNT);
         });
+
+        it("should return both available and locked aToken balances", async function () {
+            await mockLendingPool.connect(admin).addPool(tokenA.target, 500, "aTokenA", "aTKA");
+            const aTokenAddress = await mockLendingPool.getAToken(tokenA.target);
+        
+            await custodian.connect(client1).deposit(tokenA.target, DEPOSIT_AMOUNT);
+            const scaledAmount = await custodian.balanceOf(client1.address, aTokenAddress);
+        
+            await custodian.connect(orderbookSigner).lockFunds(client1.address, aTokenAddress, scaledAmount / 2n);
+        
+            const [available, locked] = await custodian.fullBalanceOf(client1.address, aTokenAddress);
+            expect(available).to.equal(scaledAmount / 2n);
+            expect(locked).to.equal(scaledAmount / 2n);
+        })
     });
 
     //-------------------------------------Withdrawal Queue-------------------------------------

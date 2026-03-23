@@ -686,4 +686,132 @@ describe("OrderBook", function() {
             expect(order.active).to.be.false;
         });
     });
+
+
+    //----------------------------------------------Settlement Scenarios---------------------------------------------------
+
+    describe("Settlement scenarios", function () {
+
+        async function placeSellOrder(
+            client: any,
+            amount: bigint,
+            price: bigint,
+            partialAllowed: boolean
+        ): Promise<bigint> {
+            const hash = computeOrderHash(
+                client.address, tokenB.target, tokenA.target, price, amount, Side.SELL, partialAllowed, SALT
+            );
+            const tx = await orderbook.connect(client).commit(hash, CommitType.Order);
+            const receipt = await tx.wait();
+            const commitId = receipt.logs[0].args[0];
+            await orderbook.connect(client).revealOrder(
+                commitId, tokenB.target, tokenA.target, price, amount, Side.SELL, partialAllowed, SALT
+            );
+            const events = await orderbook.queryFilter(orderbook.filters.OrderPlaced(), receipt.blockNumber);
+            return events[events.length - 1].args.orderId;
+        }
+
+        async function placeBuyOrder(
+            client: any,
+            amount: bigint,
+            price: bigint,
+            partialAllowed: boolean
+        ): Promise<bigint> {
+            const hash = computeOrderHash(
+                client.address, tokenA.target, tokenB.target, price, amount, Side.BUY, partialAllowed, SALT
+            );
+            const tx = await orderbook.connect(client).commit(hash, CommitType.Order);
+            const receipt = await tx.wait();
+            const commitId = receipt.logs[0].args[0];
+            await orderbook.connect(client).revealOrder(
+                commitId, tokenA.target, tokenB.target, price, amount, Side.BUY, partialAllowed, SALT
+            );
+            const events = await orderbook.queryFilter(orderbook.filters.OrderPlaced(), receipt.blockNumber);
+            return events[events.length - 1].args.orderId;
+        }
+
+        async function setupAndMatch(
+            sellAmount: bigint,
+            buyAmount: bigint,
+            price: bigint,
+            sellPartial: boolean,
+            buyPartial: boolean
+        ): Promise<{ makerOrderId: bigint, takerOrderId: bigint }> {
+            const makerOrderId = await placeSellOrder(client1, sellAmount, price, sellPartial);
+            const takerOrderId = await placeBuyOrder(client2, buyAmount, price, buyPartial);
+            return { makerOrderId, takerOrderId };
+        }
+
+        it("should fully fill both orders when amounts are equal", async function () {
+            const { makerOrderId, takerOrderId } = await setupAndMatch(
+                AMOUNT, AMOUNT, PRICE, true, true
+            );
+            const makerOrder = await orderbook.getOrder(makerOrderId);
+            const takerOrder = await orderbook.getOrder(takerOrderId);
+            expect(makerOrder.active).to.be.false;
+            expect(takerOrder.active).to.be.false;
+        });
+
+        it("should emit TradeExecuted event on successful match", async function () {
+            const makerOrderId = await placeSellOrder(client1, AMOUNT, PRICE, true);
+            const hash = computeOrderHash(
+                client2.address, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
+            );
+            const tx = await orderbook.connect(client2).commit(hash, CommitType.Order);
+            const receipt = await tx.wait();
+            const commitId = receipt.logs[0].args[0];
+            await expect(orderbook.connect(client2).revealOrder(
+                commitId, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
+            )).to.emit(settlementEngine, "TradeExecuted");
+        });
+
+        it("should partially fill maker when taker amount is smaller", async function () {
+            const makerAmount = AMOUNT;
+            const takerAmount = AMOUNT / 2n;
+            const { makerOrderId, takerOrderId } = await setupAndMatch(
+                makerAmount, takerAmount, PRICE, true, true
+            );
+            const makerOrder = await orderbook.getOrder(makerOrderId);
+            const takerOrder = await orderbook.getOrder(takerOrderId);
+            expect(takerOrder.active).to.be.false;
+            expect(makerOrder.active).to.be.true;
+            expect(makerOrder.amount).to.equal(makerAmount - takerAmount);
+        });
+
+        it("should partially fill taker when maker amount is smaller", async function () {
+            const makerAmount = AMOUNT / 2n;
+            const takerAmount = AMOUNT;
+            const { makerOrderId, takerOrderId } = await setupAndMatch(
+                makerAmount, takerAmount, PRICE, true, true
+            );
+            const makerOrder = await orderbook.getOrder(makerOrderId);
+            const takerOrder = await orderbook.getOrder(takerOrderId);
+            expect(makerOrder.active).to.be.false;
+            expect(takerOrder.active).to.be.true;
+            expect(takerOrder.amount).to.equal(takerAmount - makerAmount);
+        });
+
+        it("should revert if executeTrade is called by non-OrderBook", async function () {
+            await expect(settlementEngine.connect(client1).executeTrade(1n, 2n))
+                .to.be.revertedWithCustomError(settlementEngine, "NotOrderBook");
+        });
+
+        it("should revert if executeDirectTrade is called by non-OrderBook", async function () {
+            const takerOrder: any = {
+                id: 0n,
+                client: client2.address,
+                pairId: ethers.ZeroHash,
+                tokenIn: tokenA.target,
+                tokenOut: tokenB.target,
+                price: PRICE,
+                amount: AMOUNT,
+                side: Side.BUY,
+                active: true,
+                block: 0n,
+                partialAllowed: false
+            };
+            await expect(settlementEngine.connect(client1).executeDirectTrade(1n, takerOrder))
+                .to.be.revertedWithCustomError(settlementEngine, "NotOrderBook");
+        });
+    });
 });
