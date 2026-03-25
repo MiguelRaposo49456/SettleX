@@ -5,6 +5,8 @@ import "@uniswap/v2-periphery/contracts/interfaces/IWETH.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "../interfaces/ICustodian.sol";
 import "../interfaces/IComplianceManager.sol";
 import "../interfaces/IOrderbook.sol";
@@ -12,7 +14,7 @@ import "../interfaces/mocks/IMockLendingPool.sol";
 import "../interfaces/mocks/IAToken.sol";
 
 
-contract Custodian is ICustodian, ReentrancyGuard {
+contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
     using SafeERC20 for IERC20;
 
     address public constant ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
@@ -31,6 +33,12 @@ contract Custodian is ICustodian, ReentrancyGuard {
 
     //Locked balance: client => token => amount
     mapping(address client => mapping(address token => uint256 amount)) private _lockedBalances;
+
+    // Available NFTs: client => collection => tokenId => held
+    mapping(address client => mapping(address collection => mapping(uint256 tokenId => bool))) private _nftHoldings;
+
+    // Locked NFTs: client => collection => tokenId => locked
+    mapping(address client => mapping(address collection => mapping(uint256 tokenId => bool))) private _lockedNFTs;
 
 
     //---------------------------------------------Withdrawal Queue--------------------------------------------------
@@ -57,6 +65,11 @@ contract Custodian is ICustodian, ReentrancyGuard {
     event Initialized(address orderbook, address settlementEngine);
     event WithdrawalQueued(address indexed client, address indexed token, uint256 amount, bool receiveETH);
     event WithdrawalProcessed(address indexed client, address indexed token, uint256 amount, bool receiveETH);
+    event NFTDeposited(address indexed client, address indexed collection, uint256 tokenId);
+    event NFTWithdrawn(address indexed client, address indexed collection, uint256 tokenId);
+    event NFTLocked(address indexed client, address indexed collection, uint256 tokenId);
+    event NFTUnlocked(address indexed client, address indexed collection, uint256 tokenId);
+    event NFTInternalTransfer(address indexed from, address indexed to, address indexed collection, uint256 tokenId);
 
 
     //----------------------------------------------Errors-----------------------------------------------------------
@@ -201,6 +214,38 @@ contract Custodian is ICustodian, ReentrancyGuard {
         }
     }
 
+    //------------------------------NFT Deposit and Withdrawal Functions---------------------------------------------
+    /**
+     * @notice Deposit an NFT, increasing available balance
+     * @param collection Address of the NFT collection
+     * @param tokenId ID of the NFT to deposit
+     */
+    function depositNFT(address collection, uint256 tokenId) external nonReentrant whenNotPaused whenInitialized {
+        if (!complianceManager.isTokenAllowed(collection)) revert TokenNotAllowed(collection);
+        if (!complianceManager.isUserAllowed(msg.sender))  revert UserNotAllowed(msg.sender);
+        
+        //NFTs are held 1:1
+        IERC721(collection).safeTransferFrom(msg.sender, address(this), tokenId);
+        _nftHoldings[msg.sender][collection][tokenId] = true;
+
+        emit NFTDeposited(msg.sender, collection, tokenId);
+    }
+
+    /**
+    * @notice Withdraw an NFT, decreasing available balance
+    * @param collection Address of the NFT collection
+    * @param tokenId ID of the NFT to withdraw
+    */
+    function withdrawNFT(address collection, uint256 tokenId) external nonReentrant whenNotPaused whenInitialized {
+        if (!complianceManager.canUserWithdraw(msg.sender)) revert UserCannotWithdraw(msg.sender);
+        if (!_nftHoldings[msg.sender][collection][tokenId]) revert InsufficientBalance(0, 1);
+
+        _nftHoldings[msg.sender][collection][tokenId] = false;
+        IERC721(collection).safeTransferFrom(address(this), msg.sender, tokenId);
+
+        emit NFTWithdrawn(msg.sender, collection, tokenId);
+    }
+
 
     //----------------------------------------------ETH Functions---------------------------------------------------
     /**
@@ -254,6 +299,40 @@ contract Custodian is ICustodian, ReentrancyGuard {
         emit Withdrawn(msg.sender, ETH, amount);
     }
 
+
+    //------------------------------------------NFT Locking Functions--------------------------------------------
+    /**
+     * @notice Lock an NFT, moving it from available to locked
+     * @param client Address of the client
+     * @param collection Address of the NFT collection
+     * @param tokenId ID of the NFT to lock
+     */
+    function lockNFT(address client, address collection, uint256 tokenId) external onlyOrderBook whenNotPaused whenInitialized {
+        if (!_nftHoldings[client][collection][tokenId]) revert InsufficientBalance(0, 1);
+
+        _nftHoldings[client][collection][tokenId] = false;
+        _lockedNFTs[client][collection][tokenId]  = true;
+
+        emit NFTLocked(client, collection, tokenId);
+    }
+
+    /**
+    * @notice Unlock a previously locked NFT, moving it back to available
+    * @param client Address of the client
+    * @param collection Address of the NFT collection
+    * @param tokenId ID of the NFT to unlock
+    */
+    function unlockNFT(address client, address collection, uint256 tokenId) external onlyOrderBook whenNotPaused whenInitialized {
+        if (!_lockedNFTs[client][collection][tokenId]) revert InsufficientLockedBalance(0, 1);
+
+        _lockedNFTs[client][collection][tokenId]  = false;
+        _nftHoldings[client][collection][tokenId] = true;
+
+        emit NFTUnlocked(client, collection, tokenId);
+    }
+
+
+    //---------------------------------------Fungible Funds Locking Functions--------------------------------------
     /**
      * @notice Lock funds for a pending order, moving them from available to locked
      * @dev Called by the Orderbook when an order is submitted
@@ -295,7 +374,7 @@ contract Custodian is ICustodian, ReentrancyGuard {
         emit FundsUnlocked(client, token, amount);
     }
 
-
+    //----------------------------------------Internal Transfer Function--------------------------------------
     /**
      * @notice Transfer locked funds from one client to another's available balance
      * @dev Called by the SettlementEngine after a valid match is confirmed
@@ -322,6 +401,29 @@ contract Custodian is ICustodian, ReentrancyGuard {
         _balances[to][token] += amount;
 
         emit InternalTransfer(from, to, token, amount);
+    }
+
+    /**
+     * @notice Transfer a locked NFT from one client to another's available balance
+     * @dev Called by the SettlementEngine after a valid match is confirmed
+     *      Debits `from`'s locked NFT and credits `to`'s available NFTs
+     * @param from Client giving the NFT
+     * @param to Client receiving the NFT
+     * @param collection Address of the NFT collection
+     * @param tokenId ID of the NFT being transferred
+     */
+    function internalTransferNFT(
+        address from,
+        address to, 
+        address collection, 
+        uint256 tokenId
+    ) external onlySettlementEngine whenNotPaused whenInitialized {
+        if (!_lockedNFTs[from][collection][tokenId]) revert InsufficientLockedBalance(0, 1);
+
+        _lockedNFTs[from][collection][tokenId] = false;
+        _nftHoldings[to][collection][tokenId] = true;
+
+        emit NFTInternalTransfer(from, to, collection, tokenId);
     }
 
 
@@ -403,6 +505,11 @@ contract Custodian is ICustodian, ReentrancyGuard {
         locked = _lockedBalances[client][token];
     }
 
+    function nftBalanceOf(address client, address collection, uint256 tokenId) external view returns (bool held, bool locked) {
+        held = _nftHoldings[client][collection][tokenId];
+        locked = _lockedNFTs[client][collection][tokenId];
+    }
+
     //----------------------------------------------- Fallback -----------------------------------------------------
     /**
      * @notice Reject direct ETH transfers — use depositETH() instead
@@ -410,5 +517,10 @@ contract Custodian is ICustodian, ReentrancyGuard {
      */
     receive() external payable {
         if (msg.sender != address(weth)) revert("Use depositETH()");
+    }
+
+    //--------------------------------------------- ERC721 Receiver ------------------------------------------------
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
     }
 }

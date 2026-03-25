@@ -36,6 +36,10 @@ contract OrderBook is IOrderBook {
     // Auto-incrementing order ID counter
     uint256 private _nextOrderId;
 
+    // Auto-incrementing IDs for NFT listings and offers
+    uint256 private _nextListingId;
+    uint256 private _nextOfferId;
+
     // RB trees for buy side — keyed by price (higher = better)
     mapping(bytes32 pairId => BokkyPooBahsRedBlackTreeLibrary.Tree) private _buyTrees;
 
@@ -47,6 +51,20 @@ contract OrderBook is IOrderBook {
 
     // FIFO linked lists of order IDs per (pair, price level) for sells
     mapping(bytes32 pairId => mapping(uint256 price => StructuredLinkedList.List)) private _sellOrders;
+
+    //------------------------------------NFT Listings and Offers Storage--------------------------------------------
+
+    // NFT Listings by ID
+    mapping(uint256 => NFTListing) private _nftListings;
+
+    // NFT Offers by ID
+    mapping(uint256 => NFTOffer) private _nftOffers;
+
+    // Index: collection => tokenId => listingId (0 = no active listing)
+    mapping(address => mapping(uint256 => uint256)) private _activeListingByNFT;
+
+    // Index: collection => tokenId => offerId[] (multiple offers per NFT allowed)
+    mapping(address => mapping(uint256 => uint256[])) private _offersByNFT;
 
 
     //-----------------------------------------------Commit-Reveal---------------------------------------------------
@@ -74,7 +92,13 @@ contract OrderBook is IOrderBook {
     event CommitExpired(uint256 indexed commitId, address indexed client);
     event MakerBlacklisted(uint256 indexed orderId, address indexed maker);
     event TokenBlacklisted();
-    
+    event NFTListed(uint256 indexed listingId, address indexed seller, address indexed collection, uint256 tokenId);
+    event NFTOfferMade(uint256 indexed offerId, address indexed buyer, address indexed collection, uint256 tokenId);
+    event NFTListingCancelled(uint256 indexed listingId, address indexed seller);
+    event NFTOfferCancelled(uint256 indexed offerId, address indexed buyer);
+    event NFTListingUpdated(uint256 indexed listingId, bool active);
+    event NFTOfferUpdated(uint256 indexed offerId, bool active);
+
     
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
@@ -280,6 +304,149 @@ contract OrderBook is IOrderBook {
         _takeOrder(makerOrderId, takerAmount, pending.commitBlock);
     }
 
+    /**
+     * @notice Phase 2 (NFT listing) — reveal NFT listing parameters that match your earlier commit
+     * @param  commitId ID returned by commit()
+     * @param  collection Address of the NFT collection
+     * @param  tokenId Token ID of the NFT to list
+     * @param  paymentType Whether the payment is in ERC-20 or an NFT
+     * @param  paymentToken If ERC-20, the address of the token; if NFT, the collection address of the desired NFT
+     * @param  paymentAmount If ERC-20, the amount to pay; if NFT, should be 0
+     * @param  paymentTokenId Only relevant for NFT-for-NFT trades
+     * @param  salt Secret random value used when computing the commit hash
+     */
+    function revealNFTList(
+        uint256 commitId,
+        address collection,
+        uint256 tokenId,
+        IOrderBook.AssetType paymentType,
+        address paymentToken,                           // ERC-20 address, or NFT collection if NFT-for-NFT
+        uint256 paymentAmount,                          // 0 if NFT-for-NFT
+        uint256 paymentTokenId,                         // only if paymentType is an ERC721
+        bytes32 salt
+    ) external whenNotPaused whenInitialized {
+        PendingCommit storage pending = _pendingCommits[commitId];
+        
+        if (pending.client == address(0)) revert CommitNotFound(commitId);
+        if (msg.sender != pending.client) revert NotCommitOwner(commitId);
+        if (pending.commitType != CommitType.NFTList) revert WrongCommitType(commitId);
+        if (pending.revealed) revert CommitAlreadyRevealed();
+        if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
+        if (block.number > pending.revealDeadline) {
+            pending.expired = true;
+            revert CommitExpiredError(commitId);
+        }
+
+        bytes32 expectedHash = keccak256(abi.encodePacked(
+            msg.sender, collection, tokenId,
+            paymentType, paymentToken, paymentAmount, paymentTokenId,
+            salt
+        ));
+
+        if (expectedHash != pending.commitHash) revert CommitHashMismatch();
+
+        pending.revealed = true;
+
+        if (!complianceManager.isTokenAllowed(collection)) revert TokenNotAllowed();
+        if (!complianceManager.isUserAllowed(msg.sender))  revert UserNotAllowed(msg.sender);
+        if (paymentType == AssetType.ERC20 && !complianceManager.isTokenAllowed(paymentToken)) revert TokenNotAllowed();
+
+        // Lock the NFT
+        custodian.lockNFT(msg.sender, collection, tokenId);
+
+        uint256 listingId = _nextListingId++;
+        _nftListings[listingId] = NFTListing({
+            listingId: listingId,
+            seller: msg.sender,
+            collection: collection,
+            tokenId: tokenId,
+            paymentType: paymentType,
+            paymentToken: paymentToken,
+            paymentAmount: paymentAmount,
+            paymentTokenId: paymentTokenId,
+            active: true
+        });
+
+        _activeListingByNFT[collection][tokenId] = listingId;
+
+        // Attempt immediate match against existing offers
+        _matchNFTListing(listingId);
+
+        emit NFTListed(listingId, msg.sender, collection, tokenId);
+    }
+
+    /**
+     * @notice Phase 2 (NFT offer) — reveal NFT offer parameters that match your earlier commit
+     * @param  commitId ID returned by commit()
+     * @param  collection Address of the NFT collection
+     * @param  tokenId Token ID of the NFT to buy
+     * @param  offerType Whether the offer is in ERC-20 or an NFT
+     * @param  offerToken If ERC-20, the address of the token; if NFT, the collection address of the offered NFT
+     * @param  offerAmount If ERC-20, the amount offered; if NFT, should be 0
+     * @param  offerTokenId Only relevant if the offer is an ERC-721
+     * @param  salt Secret random value used when computing the commit hash
+     */
+    function revealNFTOffer(
+        uint256 commitId,
+        address collection,
+        uint256 tokenId,
+        IOrderBook.AssetType offerType,
+        address offerToken,
+        uint256 offerAmount,
+        uint256 offerTokenId,
+        bytes32 salt
+    ) external whenNotPaused whenInitialized {
+        PendingCommit storage pending = _pendingCommits[commitId];
+        
+        if (pending.client == address(0)) revert CommitNotFound(commitId);
+        if (msg.sender != pending.client) revert NotCommitOwner(commitId);
+        if (pending.commitType != CommitType.NFTOffer) revert WrongCommitType(commitId);
+        if (pending.revealed) revert CommitAlreadyRevealed();
+        if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
+        if (block.number > pending.revealDeadline) {
+            pending.expired = true;
+            revert CommitExpiredError(commitId);
+        }
+
+        bytes32 expectedHash = keccak256(abi.encodePacked(
+            msg.sender, collection, tokenId,
+            offerType, offerToken, offerAmount, offerTokenId,
+            salt
+        ));
+
+        if (expectedHash != pending.commitHash) revert CommitHashMismatch();
+
+        pending.revealed = true;
+
+        // Lock payment
+        if (offerType == AssetType.ERC20) {
+            custodian.lockFunds(msg.sender, offerToken, offerAmount);
+        } else {
+            custodian.lockNFT(msg.sender, offerToken, offerTokenId);
+        }
+
+        uint256 offerId = _nextOfferId++;
+        _nftOffers[offerId] = NFTOffer({
+            offerId: offerId,
+            buyer: msg.sender,
+            collection: collection,
+            tokenId: tokenId,
+            offerType: offerType,
+            offerToken: offerToken,
+            offerAmount: offerAmount,
+            offerTokenId: offerTokenId,
+            active: true
+        });
+
+        _offersByNFT[collection][tokenId].push(offerId);
+
+        // Check if there's an active listing this offer satisfies
+        uint256 listingId = _activeListingByNFT[collection][tokenId];
+        if (listingId != 0) _matchNFTOffer(listingId, offerId);
+
+        emit NFTOfferMade(offerId, msg.sender, collection, tokenId);
+    }
+
 
     /**
      * @notice Expire a commit whose reveal window has passed without a reveal.
@@ -421,6 +588,56 @@ contract OrderBook is IOrderBook {
         _cancelOrder(orderId, order);
     }
 
+    /**
+     * @notice Internal function to cancel an order
+     * @param listingId ID of the NFT listing to cancel
+     */
+    function cancelNFTListing(uint256 listingId) external whenInitialized {
+        NFTListing storage listing = _nftListings[listingId];
+
+        if (!listing.active) revert OrderNotActive(listingId);
+        if (msg.sender != listing.seller && msg.sender != address(settlementEngine)) revert NotOrderOwner(listingId);
+
+        _deactivateListing(listingId);
+        custodian.unlockNFT(listing.seller, listing.collection, listing.tokenId);
+
+        emit NFTListingCancelled(listingId, listing.seller);
+    }
+
+    /**
+     * @notice Cancel an active NFT offer and return locked payment to the buyer
+     * @param offerId ID of the NFT offer to cancel
+     */
+    function cancelNFTOffer(uint256 offerId) external whenInitialized {
+        NFTOffer storage offer = _nftOffers[offerId];
+        if (!offer.active) revert OrderNotActive(offerId);
+        if (msg.sender != offer.buyer && msg.sender != address(settlementEngine)) revert NotOrderOwner(offerId);
+
+        _deactivateOffer(offerId);
+        if (offer.offerType == AssetType.ERC20) {
+            custodian.unlockFunds(offer.buyer, offer.offerToken, offer.offerAmount);
+        } else {
+            custodian.unlockNFT(offer.buyer, offer.offerToken, offer.offerTokenId);
+        }
+
+        emit NFTOfferCancelled(offerId, offer.buyer);
+    }
+
+    /**
+     * @notice Deactivate a listing without unlocking the NFT
+     * @param listingId ID of the NFT listing to deactivate
+     */
+    function deactivateListing(uint256 listingId) external onlySettlementEngine whenInitialized {
+        _deactivateListing(listingId);
+    }
+
+    /**
+     * @notice Deactivate an offer without unlocking the payment
+     * @param offerId ID of the NFT offer to deactivate
+     */
+    function deactivateOffer(uint256 offerId) external onlySettlementEngine whenInitialized {
+        _deactivateOffer(offerId);
+    }
 
     /**
      * @notice Called by the SettlementEngine after a successful trade
@@ -440,6 +657,8 @@ contract OrderBook is IOrderBook {
         }
     }
 
+
+    //----------------------------------------------Internal Matching Logic------------------------------------------------
 
     /**
      * @notice Try to match an incoming order against existing book orders
@@ -516,7 +735,61 @@ contract OrderBook is IOrderBook {
             if (!matchFoundAtLevel) break;
         }
     }
- 
+
+
+    /**
+     * @notice Try to match a new NFT listing against existing offers for the same NFT
+     * @dev For each offer:
+     *        - Check if it satisfies the listing's ask
+     *        - If yes, call settlementEngine.executeNFTTrade() for atomic settlement
+     *        - Stop after the first match since the listing is no longer active after that
+     * @param listingId ID of the new listing to match against existing offers
+     */
+    function _matchNFTListing(uint256 listingId) internal {
+        NFTListing storage listing = _nftListings[listingId];
+        uint256[] storage offerIds = _offersByNFT[listing.collection][listing.tokenId];
+
+        for (uint256 i = 0; i < offerIds.length; i++) {
+            NFTOffer storage offer = _nftOffers[offerIds[i]];
+            if (!offer.active) continue;
+            if (_offersMatch(listing, offer)) {
+                settlementEngine.executeNFTTrade(listingId, offerIds[i]);
+                return;
+            }
+        }
+    }
+
+    /**
+     * @notice Try to match a new NFT offer against the active listing for the same NFT
+     * @dev If the offer satisfies the listing's ask, call settlementEngine.executeNFTTrade() for atomic settlement
+     * @param listingId ID of the existing listing to match against
+     * @param offerId ID of the new offer to match against the existing listing
+     */
+    function _matchNFTOffer(uint256 listingId, uint256 offerId) internal {
+        NFTListing storage listing = _nftListings[listingId];
+        NFTOffer   storage offer   = _nftOffers[offerId];
+
+        if (_offersMatch(listing, offer)) {
+            settlementEngine.executeNFTTrade(listingId, offerId);
+        }
+    }
+
+    /** @notice Check if a given offer satisfies the listing's ask
+     * @dev For ERC-20 payments, offer must meet or exceed the ask amount at the specified price
+     *      For NFT-for-NFT, offer must match the exact collection and tokenId specified in the listing
+     * @param listing The NFT listing to check against
+     * @param offer The NFT offer to check
+     */
+    function _offersMatch(NFTListing storage listing, NFTOffer storage offer) internal view returns (bool) {
+        if (listing.paymentType != offer.offerType) return false;
+
+        if (listing.paymentType == AssetType.ERC20) {
+            return offer.offerToken  == listing.paymentToken && offer.offerAmount >= listing.paymentAmount;
+        } else {
+            return offer.offerToken  == listing.paymentToken && offer.offerTokenId == listing.paymentTokenId;
+        }
+    }
+
 
     //---------------------------------Internal helpers — RB tree + linked list management--------------------------------
     /**
@@ -534,6 +807,29 @@ contract OrderBook is IOrderBook {
         custodian.unlockFunds(order.client, order.tokenOut, unlockAmount);
 
         emit OrderCancelled(orderId, order.client);
+    }
+
+    /**
+     * @notice Deactivate an NFT listing by ID
+     * @dev The private version of the cancelNFTListing function, used for both cancellations and blacklist enforcement
+     * @param listingId ID of the NFT listing to deactivate
+     */
+    function _deactivateListing(uint256 listingId) internal {
+        NFTListing storage listing = _nftListings[listingId];
+        listing.active = false;
+        _activeListingByNFT[listing.collection][listing.tokenId] = 0;
+        emit NFTListingCancelled(listingId, listing.seller);
+    }
+
+    /**
+     * @notice Deactivate an NFT offer by ID
+     * @dev The private version of the cancelNFTOffer function, used for both cancellations and blacklist enforcement
+     * @param offerId ID of the NFT offer to deactivate
+     */
+    function _deactivateOffer(uint256 offerId) internal {
+        NFTOffer storage offer = _nftOffers[offerId];
+        offer.active = false;
+        emit NFTOfferCancelled(offerId, offer.buyer);
     }
 
     /**
@@ -643,5 +939,15 @@ contract OrderBook is IOrderBook {
     // Get pending commit details by ID
     function getPendingCommit(uint256 commitId) external view returns (PendingCommit memory) {
         return _pendingCommits[commitId];
+    }
+
+    // Get active listing ID for a given NFT
+    function getNFTListing(uint256 listingId) external view returns (NFTListing memory) {
+        return _nftListings[listingId];
+    }
+
+    // Get active offer IDs for a given NFT
+    function getNFTOffer(uint256 offerId) external view returns (NFTOffer memory) {
+        return _nftOffers[offerId];
     }
 }

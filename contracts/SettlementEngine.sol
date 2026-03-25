@@ -22,6 +22,7 @@ contract SettlementEngine is ISettlementEngine {
     event InsufficientLockedBalance(uint256 lockedBalance, uint256 requiredAmount);
     event TokenBlacklisted();
     event UserBlacklisted();
+    event NFTTradeExecuted(uint256 indexed listingId, uint256 indexed offerId, address collection, uint256 tokenId);
 
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
@@ -183,5 +184,60 @@ contract SettlementEngine is ISettlementEngine {
         }
 
         emit TradeExecuted(makerOrderId, takerOrderId, executedAmount);
+    }
+
+    //-------------------------------------------NFT Trades-------------------------------------------------------
+    /**
+     * @notice Executes a trade between an NFT listing and an offer
+     * @param listingId The ID of the NFT listing
+     * @param offerId The ID of the NFT offer
+     */
+    function executeNFTTrade(uint256 listingId, uint256 offerId) external onlyOrderBook whenNotPaused whenInitialized {
+        IOrderBook.NFTListing memory listing = orderBook.getNFTListing(listingId);
+        IOrderBook.NFTOffer   memory offer   = orderBook.getNFTOffer(offerId);
+
+        if (!complianceManager.isTokenAllowed(listing.collection)) {
+            orderBook.cancelNFTListing(listingId);
+            orderBook.cancelNFTOffer(offerId);
+            emit TokenBlacklisted();
+            return;
+        }
+
+        if (!complianceManager.isUserAllowed(listing.seller)) {
+            orderBook.cancelNFTListing(listingId);
+            emit UserBlacklisted();
+            return;
+        }
+
+        if (!complianceManager.isUserAllowed(offer.buyer)) {
+            orderBook.cancelNFTOffer(offerId);
+            emit UserBlacklisted();
+            return;
+        }
+
+        // If payment is ERC-20
+        if (listing.paymentType == IOrderBook.AssetType.ERC20) {
+            // NFT goes from seller to buyer
+            custodian.internalTransferNFT(listing.seller, offer.buyer, listing.collection, listing.tokenId);
+            // ERC-20 goes from buyer to seller
+            custodian.internalTransfer(offer.buyer, listing.seller, listing.paymentToken, listing.paymentAmount);
+            // Refund overpayment if offer exceeded the ask
+            if (offer.offerAmount > listing.paymentAmount) {
+                custodian.unlockFunds(offer.buyer, offer.offerToken, offer.offerAmount - listing.paymentAmount);
+            }
+
+        // If payment is another NFT
+        } else {
+            // Listing NFT goes from seller to buyer
+            custodian.internalTransferNFT(listing.seller, offer.buyer, listing.collection, listing.tokenId);
+            // Offer NFT goes from buyer to seller
+            custodian.internalTransferNFT(offer.buyer, listing.seller,offer.offerToken, offer.offerTokenId);
+        }
+
+        // Deactivate both sides without unlocking since ownership has already been transferred
+        orderBook.deactivateListing(listingId);
+        orderBook.deactivateOffer(offerId);
+
+        emit NFTTradeExecuted(listingId, offerId, listing.collection, listing.tokenId);
     }
 }

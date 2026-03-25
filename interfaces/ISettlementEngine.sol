@@ -9,4 +9,7 @@ interface ISettlementEngine {
 
     // Executes a direct trade where the taker order is not stored in the OrderBook
     function executeDirectTrade(uint256 makerOrderId, IOrderBook.Order memory takerOrder) external;
+
+    // Executes a trade between an NFT listing and an offer
+    function executeNFTTrade(uint256 listingId, uint256 offerId) external;
 }
