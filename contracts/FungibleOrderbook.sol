@@ -486,15 +486,16 @@ contract FungibleOrderbook is IFungibleOrderbook {
                 }
 
                 // Check partial fill compatibility
-                bool fullFillPossible = maker.amount >= remainingTakerAmount;
+                bool makerFullyFilled = remainingTakerAmount >= maker.amount;
+                bool takerFullyFilled = maker.amount >= remainingTakerAmount;
 
                 // If maker doesn't allow partials and full fill isn't possible, skip
-                if (!maker.partialAllowed && !fullFillPossible) {
+                if (!maker.partialAllowed && !makerFullyFilled) {
                     makerOrderId = nextId;
                     continue;
                 }
                 // If taker doesn't allow partials and full fill isn't possible, skip
-                if (!partialAllowed && !fullFillPossible) {
+                if (!partialAllowed && !takerFullyFilled) {
                     makerOrderId = nextId;
                     continue;
                 }
