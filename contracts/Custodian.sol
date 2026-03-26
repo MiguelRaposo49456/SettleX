@@ -9,7 +9,8 @@ import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "../interfaces/ICustodian.sol";
 import "../interfaces/IComplianceManager.sol";
-import "../interfaces/IOrderbook.sol";
+import "../interfaces/IFungibleOrderbook.sol";
+import "../interfaces/INFTOrderbook.sol";
 import "../interfaces/mocks/IMockLendingPool.sol";
 import "../interfaces/mocks/IAToken.sol";
 
@@ -20,7 +21,8 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
     address public constant ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     address public settlementEngine;
-    IOrderBook public orderBook;
+    IFungibleOrderbook public fungibleOrderbook;
+    INFTOrderbook public nftOrderbook;
     IComplianceManager public immutable complianceManager;
     IMockLendingPool public immutable lendingPool;
     IWETH public immutable weth;
@@ -62,7 +64,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
     event FundsLocked(address indexed client, address indexed token, uint256 amount);
     event FundsUnlocked(address indexed client, address indexed token, uint256 amount);
     event InternalTransfer(address indexed from, address indexed to, address indexed token, uint256 amount);
-    event Initialized(address orderbook, address settlementEngine);
+    event Initialized(address fungibleOrderBook, address nftOrderBook, address settlementEngine);
     event WithdrawalQueued(address indexed client, address indexed token, uint256 amount, bool receiveETH);
     event WithdrawalProcessed(address indexed client, address indexed token, uint256 amount, bool receiveETH);
     event NFTDeposited(address indexed client, address indexed collection, uint256 tokenId);
@@ -97,9 +99,9 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
         _;
     }
 
-    // Only allows the Orderbook to call the functions
-    modifier onlyOrderBook() {
-        if (msg.sender != address(orderBook)) revert NotOrderbook();
+    modifier onlyAuthorizedOrderBook() {
+        if (msg.sender != address(fungibleOrderbook) && msg.sender != address(nftOrderbook))
+            revert NotOrderbook();
         _;
     }
 
@@ -138,15 +140,16 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
      * @notice Wire up Orderbook and SettlementEngine after all three contracts are deployed
      * @dev Can only be called once by the admin
      */
-    function initialize(address _orderBook, address _settlementEngine) external onlyAdmin {
+    function initialize(address _fungibleOrderBook, address _nftOrderBook, address _settlementEngine) external onlyAdmin {
         if (initialized) revert AlreadyInitialized();
-        if (_orderBook == address(0) || _settlementEngine == address(0)) revert ZeroAddress();
+        if (_fungibleOrderBook == address(0) || _nftOrderBook == address(0) || _settlementEngine == address(0)) revert ZeroAddress();
 
         settlementEngine = _settlementEngine;
-        orderBook = IOrderBook(_orderBook);
+        fungibleOrderbook = IFungibleOrderbook(_fungibleOrderBook);
+        nftOrderbook = INFTOrderbook(_nftOrderBook);
         initialized = true;
 
-        emit Initialized(_orderBook, _settlementEngine);
+        emit Initialized(_fungibleOrderBook, _nftOrderBook, _settlementEngine);
     }
 
     //----------------------------------------------Functions-------------------------------------------------------
@@ -307,7 +310,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
      * @param collection Address of the NFT collection
      * @param tokenId ID of the NFT to lock
      */
-    function lockNFT(address client, address collection, uint256 tokenId) external onlyOrderBook whenNotPaused whenInitialized {
+    function lockNFT(address client, address collection, uint256 tokenId) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         if (!_nftHoldings[client][collection][tokenId]) revert InsufficientBalance(0, 1);
 
         _nftHoldings[client][collection][tokenId] = false;
@@ -322,7 +325,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
     * @param collection Address of the NFT collection
     * @param tokenId ID of the NFT to unlock
     */
-    function unlockNFT(address client, address collection, uint256 tokenId) external onlyOrderBook whenNotPaused whenInitialized {
+    function unlockNFT(address client, address collection, uint256 tokenId) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         if (!_lockedNFTs[client][collection][tokenId]) revert InsufficientLockedBalance(0, 1);
 
         _lockedNFTs[client][collection][tokenId]  = false;
@@ -340,7 +343,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
      * @param token  Token to lock
      * @param amount Amount to lock
      */
-    function lockFunds(address client, address token, uint256 amount) external onlyOrderBook whenNotPaused whenInitialized {
+    function lockFunds(address client, address token, uint256 amount) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
 
         uint256 available = _balances[client][token];
@@ -361,7 +364,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
      * @param token  Token to unlock
      * @param amount Amount to unlock
      */
-    function unlockFunds(address client, address token, uint256 amount) external onlyOrderBook whenNotPaused whenInitialized {
+    function unlockFunds(address client, address token, uint256 amount) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
 
         uint256 locked = _lockedBalances[client][token];

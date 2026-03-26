@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-interface IOrderBook {
+interface IFungibleOrderbook {
 
     enum CommitType { Order, Take, NFTList, NFTOffer }
 
@@ -28,34 +28,6 @@ interface IOrderBook {
         uint256 amount;         // Amount of tokenIn the user wants to buy
         uint256 block;          // Block number when the order was created
     }
-
-
-    enum AssetType { ERC20, ERC721 }
-
-    struct NFTListing {
-        uint256 listingId;
-        address seller;
-        address collection;
-        uint256 tokenId;
-        AssetType paymentType;                          // Type of payment: ERC20 or ERC721
-        address paymentToken;                           // ERC-20 or NFT collection address
-        uint256 paymentAmount;                          // in paymentToken units (0 if paying with NFT)
-        uint256 paymentTokenId;                         // only meaningful if paymentType is an ERC721
-        bool active;
-    }
-
-    struct NFTOffer {
-        uint256 offerId;
-        address buyer;
-        address collection;                             // collection they want to buy into
-        uint256 tokenId;                                // specific token ID they want
-        AssetType offerType;                            // Type of offer: ERC20 or ERC721
-        address offerToken;                             // ERC-20 or NFT collection address
-        uint256 offerAmount;                            // ERC-20 amount (0 if NFT offer)
-        uint256 offerTokenId;                           // only if offerType is an ERC721
-        bool active;
-    }
-
 
     // Allows a user to submit a commit for either a place order or a take order
     function commit(bytes32 commitHash, CommitType commitType) external returns (uint256 commitId);
@@ -91,22 +63,4 @@ interface IOrderBook {
 
     // Returns the full PendingCommit struct for a given commit ID
     function getPendingCommit(uint256 commitId) external view returns (PendingCommit memory);
-
-    // Creates a new NFT listing
-    function getNFTListing(uint256 listingId) external view returns (NFTListing memory);
-    
-    // Creates a new NFT offer
-    function getNFTOffer(uint256 offerId) external view returns (NFTOffer memory);
-    
-    // Cancels an active NFT listing and unlocks the NFT
-    function cancelNFTListing(uint256 listingId) external;
-    
-    // Cancels an active NFT offer and unlocks the offered asset
-    function cancelNFTOffer(uint256 offerId) external;
-    
-    // Internal functions to deactivate listings without unlocking
-    function deactivateListing(uint256 listingId) external;
-    
-    // Internal functions to deactivate offers without unlocking
-    function deactivateOffer(uint256 offerId) external;
 }

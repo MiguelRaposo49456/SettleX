@@ -15,7 +15,7 @@ const ETH_ADDRESS   = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
 describe("Custodian", function () {
     let admin: any, operator: any, client1: any, client2: any;
-    let complianceManager: any, orderbook: any, custodian: any, settlementEngine: any;
+    let complianceManager: any, fungibleOrderbook: any, custodian: any, settlementEngine: any;
     let tokenA: any, tokenB: any, mockWeth: any, mockLendingPool: any;
     let orderbookSigner: any, settlementEngineSigner: any;
 
@@ -24,17 +24,17 @@ describe("Custodian", function () {
     const ETH_AMOUNT = ethers.parseEther("1.0");
 
     beforeEach(async function () {
-        ({ admin, client1, client2, complianceManager, orderbook, custodian,
+        ({ admin, client1, client2, complianceManager, fungibleOrderbook, custodian,
            settlementEngine, tokenA, tokenB, mockWeth, mockLendingPool }
             = await deploySystem(ethers));
 
         [, operator] = await ethers.getSigners();
         await complianceManager.connect(admin).grantRole(OPERATOR_ROLE, operator.address);
 
-        orderbookSigner = await ethers.getImpersonatedSigner(orderbook.target);
+        orderbookSigner = await ethers.getImpersonatedSigner(fungibleOrderbook.target);
         settlementEngineSigner = await ethers.getImpersonatedSigner(settlementEngine.target);
 
-        await ethers.provider.send("hardhat_setBalance", [orderbook.target, ethers.toQuantity(ethers.parseEther("1.0"))]);
+        await ethers.provider.send("hardhat_setBalance", [fungibleOrderbook.target, ethers.toQuantity(ethers.parseEther("1.0"))]);
         await ethers.provider.send("hardhat_setBalance", [settlementEngine.target, ethers.toQuantity(ethers.parseEther("1.0"))]);
 
         await tokenA.mint(client1.address, ethers.parseUnits("1000", 18));

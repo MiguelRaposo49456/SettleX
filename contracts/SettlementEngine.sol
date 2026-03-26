@@ -3,13 +3,15 @@ pragma solidity ^0.8.28;
 
 import "../interfaces/ISettlementEngine.sol";
 import "../interfaces/IComplianceManager.sol";
-import "../interfaces/IOrderbook.sol";
+import "../interfaces/IFungibleOrderbook.sol";
+import "../interfaces/INFTOrderbook.sol";
 import "../interfaces/ICustodian.sol";
 
 contract SettlementEngine is ISettlementEngine {
     
     ICustodian public custodian;
-    IOrderBook public orderBook;
+    IFungibleOrderbook public fungibleOrderBook;
+    INFTOrderbook public nftOrderBook;
     IComplianceManager public immutable complianceManager;
 
     bool public initialized;
@@ -18,7 +20,7 @@ contract SettlementEngine is ISettlementEngine {
 
     //----------------------------------------------Events-----------------------------------------------------------
     event TradeExecuted(uint256 indexed orderIdMaker, uint256 indexed orderIdTaker, uint256 executedAmount);
-    event Initialized(address orderbook, address custodian);
+    event Initialized(address fungibleOrderBook, address nftOrderBook, address custodian);
     event InsufficientLockedBalance(uint256 lockedBalance, uint256 requiredAmount);
     event TokenBlacklisted();
     event UserBlacklisted();
@@ -28,15 +30,16 @@ contract SettlementEngine is ISettlementEngine {
     error AlreadyInitialized();
     error NotAdmin();
     error NotInitialized();
-    error NotOrderBook();
+    error NotOrderbook();
     error SystemPaused();
     error ZeroAddress();
 
     //---------------------------------------------Modifiers--------------------------------------------------------
 
     // Only allows the Orderbook to call the functions
-    modifier onlyOrderBook() {
-        if (msg.sender != address(orderBook)) revert NotOrderBook();
+    modifier onlyAuthorizedOrderBook() {
+        if (msg.sender != address(fungibleOrderBook) && msg.sender != address(nftOrderBook))
+            revert NotOrderbook();
         _;
     }
 
@@ -70,15 +73,16 @@ contract SettlementEngine is ISettlementEngine {
      * @notice Wire up Orderbook and Custodian after all three contracts are deployed
      * @dev Can only be called once by the admin
      */
-    function initialize(address _orderBook, address _custodian) external onlyAdmin {
+    function initialize(address _fungibleOrderbook, address _nftOrderbook, address _custodian) external onlyAdmin {
         if (initialized) revert AlreadyInitialized();
-        if (_orderBook == address(0) || _custodian == address(0)) revert ZeroAddress();
+        if (_fungibleOrderbook == address(0) || _nftOrderbook == address(0) || _custodian == address(0)) revert ZeroAddress();
 
-        orderBook = IOrderBook(_orderBook);
+        fungibleOrderBook = IFungibleOrderbook(_fungibleOrderbook);
+        nftOrderBook = INFTOrderbook(_nftOrderbook);
         custodian = ICustodian(_custodian);
         initialized = true;
 
-        emit Initialized(_orderBook, _custodian);
+        emit Initialized(_fungibleOrderbook, _nftOrderbook, _custodian);
     }
 
 
@@ -90,8 +94,8 @@ contract SettlementEngine is ISettlementEngine {
      * @param orderIdMaker The ID of the maker order
      * @param orderIdTaker The ID of the taker order
      */
-    function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker) external onlyOrderBook whenNotPaused whenInitialized {
-        IOrderBook.Order memory takerOrder = orderBook.getOrder(orderIdTaker);
+    function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
+        IFungibleOrderbook.Order memory takerOrder = fungibleOrderBook.getOrder(orderIdTaker);
         _executeTrade(orderIdMaker, takerOrder, orderIdTaker);
     }
 
@@ -102,7 +106,7 @@ contract SettlementEngine is ISettlementEngine {
      * @param makerOrderId The ID of the maker order
      * @param takerOrder The taker order details provided as input (not stored in OrderBook)
      */
-    function executeDirectTrade(uint256 makerOrderId, IOrderBook.Order memory takerOrder) external onlyOrderBook whenNotPaused whenInitialized {
+    function executeDirectTrade(uint256 makerOrderId, IFungibleOrderbook.Order memory takerOrder) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         _executeTrade(makerOrderId, takerOrder, 0);
     }
 
@@ -114,18 +118,18 @@ contract SettlementEngine is ISettlementEngine {
      */
     function _executeTrade(
         uint256 makerOrderId,
-        IOrderBook.Order memory takerOrder,
+        IFungibleOrderbook.Order memory takerOrder,
         uint256 takerOrderId  // 0 if taker has no stored order
     ) internal {
-        IOrderBook.Order memory makerOrder = orderBook.getOrder(makerOrderId);
+        IFungibleOrderbook.Order memory makerOrder = fungibleOrderBook.getOrder(makerOrderId);
 
         assert(makerOrder.tokenIn == takerOrder.tokenOut);
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
         // Check if the tokens in the orders aren't blacklisted
         if (!complianceManager.isTokenAllowed(makerOrder.tokenIn) || !complianceManager.isTokenAllowed(takerOrder.tokenIn)) {
-            orderBook.cancelOrder(makerOrderId);
-            if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
+            fungibleOrderBook.cancelOrder(makerOrderId);
+            if (takerOrderId != 0) fungibleOrderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit TokenBlacklisted();
             return;
@@ -133,7 +137,7 @@ contract SettlementEngine is ISettlementEngine {
 
         // Check maker user — if blacklisted cancel maker only, taker order stays active
         if (!complianceManager.isUserAllowed(makerOrder.client)) {
-            orderBook.cancelOrder(makerOrderId);
+            fungibleOrderBook.cancelOrder(makerOrderId);
             if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit UserBlacklisted();
             return;
@@ -141,7 +145,7 @@ contract SettlementEngine is ISettlementEngine {
 
         // Check taker user — if blacklisted cancel taker only, maker order stays active
         if (!complianceManager.isUserAllowed(takerOrder.client)) {
-            if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
+            if (takerOrderId != 0) fungibleOrderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit UserBlacklisted();
             return;
@@ -155,7 +159,7 @@ contract SettlementEngine is ISettlementEngine {
         // Check maker has enough locked funds for the executed amount
         uint256 makerLocked = custodian.lockedBalanceOf(makerOrder.client, makerOrder.tokenOut);
         if (makerLocked < executedAmount) {
-            orderBook.cancelOrder(makerOrderId);
+            fungibleOrderBook.cancelOrder(makerOrderId);
             if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit InsufficientLockedBalance(makerLocked, executedAmount);
             return;
@@ -164,7 +168,7 @@ contract SettlementEngine is ISettlementEngine {
         // Check taker has enough locked funds for the executed amount
         uint256 takerLocked = custodian.lockedBalanceOf(takerOrder.client, takerOrder.tokenOut);
         if (takerLocked < executedAmount) {
-            if (takerOrderId != 0) orderBook.cancelOrder(takerOrderId);
+            if (takerOrderId != 0) fungibleOrderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerLocked);
             emit InsufficientLockedBalance(takerLocked, executedAmount);
             return;
@@ -176,11 +180,11 @@ contract SettlementEngine is ISettlementEngine {
 
         // Update remaining amounts in the OrderBook
         // Each order's new remaining = old amount - executedAmount
-        orderBook.updateOrderAmount(makerOrderId, makerOrder.amount - executedAmount);
+        fungibleOrderBook.updateOrderAmount(makerOrderId, makerOrder.amount - executedAmount);
 
         // Update taker amount only if it has a stored order
         if (takerOrderId != 0) {
-            orderBook.updateOrderAmount(takerOrderId, takerOrder.amount - executedAmount);
+            fungibleOrderBook.updateOrderAmount(takerOrderId, takerOrder.amount - executedAmount);
         }
 
         emit TradeExecuted(makerOrderId, takerOrderId, executedAmount);
@@ -192,31 +196,31 @@ contract SettlementEngine is ISettlementEngine {
      * @param listingId The ID of the NFT listing
      * @param offerId The ID of the NFT offer
      */
-    function executeNFTTrade(uint256 listingId, uint256 offerId) external onlyOrderBook whenNotPaused whenInitialized {
-        IOrderBook.NFTListing memory listing = orderBook.getNFTListing(listingId);
-        IOrderBook.NFTOffer   memory offer   = orderBook.getNFTOffer(offerId);
+    function executeNFTTrade(uint256 listingId, uint256 offerId) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
+        INFTOrderbook.NFTListing memory listing = nftOrderBook.getNFTListing(listingId);
+        INFTOrderbook.NFTOffer   memory offer   = nftOrderBook.getNFTOffer(offerId);
 
         if (!complianceManager.isTokenAllowed(listing.collection)) {
-            orderBook.cancelNFTListing(listingId);
-            orderBook.cancelNFTOffer(offerId);
+            nftOrderBook.cancelNFTListing(listingId);
+            nftOrderBook.cancelNFTOffer(offerId);
             emit TokenBlacklisted();
             return;
         }
 
         if (!complianceManager.isUserAllowed(listing.seller)) {
-            orderBook.cancelNFTListing(listingId);
+            nftOrderBook.cancelNFTListing(listingId);
             emit UserBlacklisted();
             return;
         }
 
         if (!complianceManager.isUserAllowed(offer.buyer)) {
-            orderBook.cancelNFTOffer(offerId);
+            nftOrderBook.cancelNFTOffer(offerId);
             emit UserBlacklisted();
             return;
         }
 
         // If payment is ERC-20
-        if (listing.paymentType == IOrderBook.AssetType.ERC20) {
+        if (listing.paymentType == INFTOrderbook.AssetType.ERC20) {
             // NFT goes from seller to buyer
             custodian.internalTransferNFT(listing.seller, offer.buyer, listing.collection, listing.tokenId);
             // ERC-20 goes from buyer to seller
@@ -235,8 +239,8 @@ contract SettlementEngine is ISettlementEngine {
         }
 
         // Deactivate both sides without unlocking since ownership has already been transferred
-        orderBook.deactivateListing(listingId);
-        orderBook.deactivateOffer(offerId);
+        nftOrderBook.deactivateListing(listingId);
+        nftOrderBook.deactivateOffer(offerId);
 
         emit NFTTradeExecuted(listingId, offerId, listing.collection, listing.tokenId);
     }
