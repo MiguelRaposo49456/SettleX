@@ -13,7 +13,6 @@ interface INFTOrderbook {
         uint256 commitBlock;
         uint256 revealDeadline;
         bool revealed;
-        bool expired;
         CommitType commitType;
     }
 
@@ -45,7 +44,6 @@ interface INFTOrderbook {
     function commit(bytes32 commitHash, CommitType commitType) external returns (uint256 commitId);
     function revealNFTList(uint256 commitId, address collection, uint256 tokenId, AssetType paymentType, address paymentToken, uint256 paymentAmount, uint256 paymentTokenId, bytes32 salt) external;
     function revealNFTOffer(uint256 commitId, address collection, uint256 tokenId, AssetType offerType, address offerToken, uint256 offerAmount, uint256 offerTokenId, bytes32 salt) external;
-    function expireCommit(uint256 commitId) external;
 
     // Functions to cancel or deactivate listings and offers
     function cancelNFTListing(uint256 listingId) external;

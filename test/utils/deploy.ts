@@ -5,6 +5,10 @@ export async function deploySystem(ethers: any) {
     const tokenA = await ethers.deployContract("MockERC20", ["TokenA", "TKA", 18]);
     const tokenB = await ethers.deployContract("MockERC20", ["TokenB", "TKB", 18]);
 
+    // Deploy MockERC721 collections
+    const nftCollection = await ethers.deployContract("MockERC721", ["CollectionA", "CLXA"]);
+    const otherNFTCollection = await ethers.deployContract("MockERC721", ["CollectionB", "CLXB"]);
+
     // Deploy mock lending dependencies
     const mockLendingPool = await ethers.deployContract("MockLendingPool");
     const mockWeth = await ethers.deployContract("MockWETH");
@@ -14,7 +18,7 @@ export async function deploySystem(ethers: any) {
     const fungibleOrderbook = await ethers.deployContract("FungibleOrderbook", [complianceManager.target]);
     const nftOrderbook = await ethers.deployContract("NFTOrderbook", [complianceManager.target]);
     const custodian = await ethers.deployContract("Custodian", [complianceManager.target, mockLendingPool.target, mockWeth.target]);
-    const settlementEngine  = await ethers.deployContract("SettlementEngine", [complianceManager.target]);
+    const settlementEngine = await ethers.deployContract("SettlementEngine", [complianceManager.target]);
 
     // Wire them together
     await fungibleOrderbook.connect(admin).initialize(custodian.target, settlementEngine.target);
@@ -26,6 +30,8 @@ export async function deploySystem(ethers: any) {
         admin, client1, client2,
         complianceManager, fungibleOrderbook, nftOrderbook, custodian, settlementEngine,
         tokenA, tokenB,
-        mockLendingPool, mockWeth
+        nftCollection,
+        otherNFTCollection,
+        mockLendingPool, mockWeth,
     };
 }

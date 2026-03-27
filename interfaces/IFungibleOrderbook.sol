@@ -11,7 +11,6 @@ interface IFungibleOrderbook {
         uint256 commitBlock;
         uint256 revealDeadline;
         bool revealed;
-        bool expired;
         CommitType commitType;
     }
 

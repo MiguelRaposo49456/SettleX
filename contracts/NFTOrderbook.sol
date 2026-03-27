@@ -52,6 +52,7 @@ contract NFTOrderbook is INFTOrderbook {
 
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
+    error CollectionNotAllowed(address collection);
     error CommitAlreadyRevealed();
     error CommitAndRevealOnSameBlock();
     error CommitExpiredError(uint256 commitId);
@@ -136,7 +137,6 @@ contract NFTOrderbook is INFTOrderbook {
             commitBlock:    block.number,
             revealDeadline: block.number + NFT_REVEAL_WINDOW,
             revealed:       false,
-            expired:        false,
             commitType:     commitType
         });
 
@@ -172,7 +172,6 @@ contract NFTOrderbook is INFTOrderbook {
         if (pending.revealed) revert CommitAlreadyRevealed();
         if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
         if (block.number > pending.revealDeadline) {
-            pending.expired = true;
             revert CommitExpiredError(commitId);
         }
 
@@ -187,9 +186,9 @@ contract NFTOrderbook is INFTOrderbook {
         pending.revealed = true;
 
         // Compliance checks
-        if (!complianceManager.isTokenAllowed(collection)) revert TokenNotAllowed();
+        if (!complianceManager.isTokenAllowed(collection)) revert CollectionNotAllowed(collection);
         if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
-        if (paymentType == AssetType.ERC20 && !complianceManager.isTokenAllowed(paymentToken)) revert TokenNotAllowed();
+        if (!complianceManager.isTokenAllowed(paymentToken)) revert TokenNotAllowed();
 
         // Lock the NFT being listed
         custodian.lockNFT(msg.sender, collection, tokenId);
@@ -244,7 +243,6 @@ contract NFTOrderbook is INFTOrderbook {
         if (pending.revealed) revert CommitAlreadyRevealed();
         if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
         if (block.number > pending.revealDeadline) {
-            pending.expired = true;
             revert CommitExpiredError(commitId);
         }
 
@@ -260,8 +258,8 @@ contract NFTOrderbook is INFTOrderbook {
 
         // Compliance checks
         if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
-        if (!complianceManager.isTokenAllowed(collection)) revert TokenNotAllowed();
-        if (offerType == AssetType.ERC20 && !complianceManager.isTokenAllowed(offerToken)) revert TokenNotAllowed();
+        if (!complianceManager.isTokenAllowed(collection)) revert CollectionNotAllowed(collection);
+        if (!complianceManager.isTokenAllowed(offerToken)) revert TokenNotAllowed();
 
         // Lock the payment
         if (offerType == AssetType.ERC20) {
@@ -290,22 +288,6 @@ contract NFTOrderbook is INFTOrderbook {
         if (listingId != 0) _matchNFTOffer(listingId, offerId);
 
         emit NFTOfferMade(offerId, msg.sender, collection, tokenId);
-    }
-
-    /**
-     * @notice Expire a commit whose reveal window has passed without a reveal
-     * @param commitId The commit to expire
-     */
-    function expireCommit(uint256 commitId) external {
-        PendingCommit storage pending = _pendingCommits[commitId];
-
-        if (pending.client == address(0)) revert CommitNotFound(commitId);
-        if (pending.revealed) revert CommitAlreadyRevealed();
-        if (pending.expired) revert CommitExpiredError(commitId);
-        if (block.number <= pending.revealDeadline) revert RevealWindowOpen(commitId);
-
-        pending.expired = true;
-        emit CommitExpired(commitId, pending.client);
     }
 
 
@@ -378,6 +360,7 @@ contract NFTOrderbook is INFTOrderbook {
 
             // NFT-for-NFT where there is only one possible correct match
             if (listing.paymentType == AssetType.ERC721) {
+                emit NFTTradeMatched(listingId, offerIds[i]);
                 settlementEngine.executeNFTTrade(listingId, offerIds[i]);
                 return;
             }
@@ -390,6 +373,7 @@ contract NFTOrderbook is INFTOrderbook {
         }
 
         if (bestOfferId != 0) {
+            emit NFTTradeMatched(listingId, bestOfferId);
             settlementEngine.executeNFTTrade(listingId, bestOfferId);
         }
     }
@@ -404,6 +388,7 @@ contract NFTOrderbook is INFTOrderbook {
         NFTOffer storage offer = _nftOffers[offerId];
 
         if (_offersMatch(listing, offer)) {
+            emit NFTTradeMatched(listingId, offerId);
             settlementEngine.executeNFTTrade(listingId, offerId);
         }
     }

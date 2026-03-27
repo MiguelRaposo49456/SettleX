@@ -137,7 +137,6 @@ describe("FungibleOrderbook", function() {
             expect(pending.commitHash).to.equal(hash);
             expect(pending.client).to.equal(client1.address);
             expect(pending.revealed).to.be.false;
-            expect(pending.expired).to.be.false;
             expect(pending.commitType).to.equal(CommitType.Order);
         });
 
@@ -567,62 +566,7 @@ describe("FungibleOrderbook", function() {
         });
     });
 
-    //----------------------------------------------Expire Commit---------------------------------------------------
-
-    describe("expireCommit()", function () {
-
-        let commitId: bigint;
-
-        beforeEach(async function () {
-            const hash = computeOrderHash(
-                client1.address, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            );
-            const tx = await fungibleOrderbook.connect(client1).commit(hash, CommitType.Order);
-            const receipt = await tx.wait();
-            commitId = receipt.logs[0].args[0];
-        });
-
-        it("should expire a commit after the reveal window", async function () {
-            await ethers.provider.send("hardhat_mine", ["0x15"]); // mine 21 blocks
-            await fungibleOrderbook.connect(client1).expireCommit(commitId);
-            const pending = await fungibleOrderbook.getPendingCommit(commitId);
-            expect(pending.expired).to.be.true;
-        });
-
-        it("should revert if still within reveal window", async function () {
-            await expect(fungibleOrderbook.connect(client1).expireCommit(commitId))
-                .to.be.revertedWithCustomError(fungibleOrderbook, "RevealWindowOpen");
-        });
-
-        it("should revert if commit not found", async function () {
-            await expect(fungibleOrderbook.connect(client1).expireCommit(999n))
-                .to.be.revertedWithCustomError(fungibleOrderbook, "CommitNotFound");
-        });
-
-        it("should revert if already revealed", async function () {
-            await fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            );
-            await ethers.provider.send("hardhat_mine", ["0x15"]);
-            await expect(fungibleOrderbook.connect(client1).expireCommit(commitId))
-                .to.be.revertedWithCustomError(fungibleOrderbook, "CommitAlreadyRevealed");
-        });
-
-        it("should revert if already expired", async function () {
-            await ethers.provider.send("hardhat_mine", ["0x15"]);
-            await fungibleOrderbook.connect(client1).expireCommit(commitId);
-            await expect(fungibleOrderbook.connect(client1).expireCommit(commitId))
-                .to.be.revertedWithCustomError(fungibleOrderbook, "CommitExpiredError");
-        });
-
-        it("should emit CommitExpired event", async function () {
-            await ethers.provider.send("hardhat_mine", ["0x15"]);
-            await expect(fungibleOrderbook.connect(client1).expireCommit(commitId))
-                .to.emit(fungibleOrderbook, "CommitExpired")
-                .withArgs(commitId, client1.address);
-        });
-    });
-
+    
     //----------------------------------------------Update Order Amount-------------------------------------------------
 
     describe("updateOrderAmount()", function () {

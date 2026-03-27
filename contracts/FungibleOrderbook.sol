@@ -166,7 +166,6 @@ contract FungibleOrderbook is IFungibleOrderbook {
             commitBlock: block.number,
             revealDeadline: block.number + revealWindow,
             revealed: false,
-            expired: false,
             commitType: commitType
         });
 
@@ -204,7 +203,6 @@ contract FungibleOrderbook is IFungibleOrderbook {
         if (pending.revealed) revert CommitAlreadyRevealed();
         if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
         if (block.number > pending.revealDeadline) {
-            pending.expired = true;
             revert CommitExpiredError(commitId);
         }
 
@@ -259,7 +257,6 @@ contract FungibleOrderbook is IFungibleOrderbook {
         if (pending.revealed) revert CommitAlreadyRevealed();
         if (block.number == pending.commitBlock) revert CommitAndRevealOnSameBlock();
         if (block.number > pending.revealDeadline) {
-            pending.expired = true;
             revert CommitExpiredError(commitId);
         }
 
@@ -276,22 +273,6 @@ contract FungibleOrderbook is IFungibleOrderbook {
         pending.revealed = true;
 
         _takeOrder(makerOrderId, takerAmount, pending.commitBlock);
-    }
-
-    /**
-     * @notice Expire a commit whose reveal window has passed without a reveal.
-     * @param  commitId  The commit to expire
-     */
-    function expireCommit(uint256 commitId) external {
-        PendingCommit storage pending = _pendingCommits[commitId];
-
-        if (pending.client == address(0)) revert CommitNotFound(commitId);
-        if (pending.revealed) revert CommitAlreadyRevealed();
-        if (pending.expired) revert CommitExpiredError(commitId);
-        if (block.number <= pending.revealDeadline) revert RevealWindowOpen(commitId);
-
-        pending.expired = true;
-        emit CommitExpired(commitId, pending.client);
     }
 
     //----------------------------------------------Orderbook Functions-----------------------------------------------

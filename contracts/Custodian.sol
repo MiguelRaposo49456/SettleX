@@ -99,8 +99,8 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
         _;
     }
 
-    modifier onlyAuthorizedOrderBook() {
-        if (msg.sender != address(fungibleOrderbook) && msg.sender != address(nftOrderbook))
+    modifier onlyAuthorizedEntities() {
+        if (msg.sender != address(fungibleOrderbook) && msg.sender != address(nftOrderbook) && msg.sender != settlementEngine)
             revert NotOrderbook();
         _;
     }
@@ -310,7 +310,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
      * @param collection Address of the NFT collection
      * @param tokenId ID of the NFT to lock
      */
-    function lockNFT(address client, address collection, uint256 tokenId) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
+    function lockNFT(address client, address collection, uint256 tokenId) external onlyAuthorizedEntities whenNotPaused whenInitialized {
         if (!_nftHoldings[client][collection][tokenId]) revert InsufficientBalance(0, 1);
 
         _nftHoldings[client][collection][tokenId] = false;
@@ -325,7 +325,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
     * @param collection Address of the NFT collection
     * @param tokenId ID of the NFT to unlock
     */
-    function unlockNFT(address client, address collection, uint256 tokenId) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
+    function unlockNFT(address client, address collection, uint256 tokenId) external onlyAuthorizedEntities whenNotPaused whenInitialized {
         if (!_lockedNFTs[client][collection][tokenId]) revert InsufficientLockedBalance(0, 1);
 
         _lockedNFTs[client][collection][tokenId]  = false;
@@ -343,7 +343,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
      * @param token  Token to lock
      * @param amount Amount to lock
      */
-    function lockFunds(address client, address token, uint256 amount) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
+    function lockFunds(address client, address token, uint256 amount) external onlyAuthorizedEntities whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
 
         uint256 available = _balances[client][token];
@@ -364,7 +364,7 @@ contract Custodian is ICustodian, ReentrancyGuard, IERC721Receiver {
      * @param token  Token to unlock
      * @param amount Amount to unlock
      */
-    function unlockFunds(address client, address token, uint256 amount) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
+    function unlockFunds(address client, address token, uint256 amount) external onlyAuthorizedEntities whenNotPaused whenInitialized {
         if (amount == 0) revert ZeroAmount();
 
         uint256 locked = _lockedBalances[client][token];
