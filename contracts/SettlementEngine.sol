@@ -23,7 +23,8 @@ contract SettlementEngine is ISettlementEngine {
     event Initialized(address fungibleOrderBook, address nftOrderBook, address custodian);
     event InsufficientLockedBalance(uint256 lockedBalance, uint256 requiredAmount);
     event TokenBlacklisted();
-    event UserBlacklisted();
+    event UserBlacklisted(address user);
+    event OrderNotActive(uint256 orderId);
     event NFTTradeExecuted(uint256 indexed listingId, uint256 indexed offerId, address collection, uint256 tokenId);
 
     //----------------------------------------------Errors-----------------------------------------------------------
@@ -31,6 +32,8 @@ contract SettlementEngine is ISettlementEngine {
     error NotAdmin();
     error NotInitialized();
     error NotOrderbook();
+    error ListingNotActive();
+    error OfferNotActive();
     error SystemPaused();
     error ZeroAddress();
 
@@ -126,6 +129,17 @@ contract SettlementEngine is ISettlementEngine {
         assert(makerOrder.tokenIn == takerOrder.tokenOut);
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
+        if (!makerOrder.active || !takerOrder.active) {
+            if (!makerOrder.active) {
+                if (takerOrderId != 0) fungibleOrderBook.cancelOrder(takerOrderId);
+                else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+                emit OrderNotActive(makerOrderId);
+            } else {
+                emit OrderNotActive(takerOrderId);
+            }
+            return;
+        }
+
         // Check if the tokens in the orders aren't blacklisted
         if (!complianceManager.isTokenAllowed(makerOrder.tokenIn) || !complianceManager.isTokenAllowed(takerOrder.tokenIn)) {
             fungibleOrderBook.cancelOrder(makerOrderId);
@@ -139,7 +153,7 @@ contract SettlementEngine is ISettlementEngine {
         if (!complianceManager.isUserAllowed(makerOrder.client)) {
             fungibleOrderBook.cancelOrder(makerOrderId);
             if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-            emit UserBlacklisted();
+            emit UserBlacklisted(makerOrder.client);
             return;
         }
 
@@ -147,7 +161,7 @@ contract SettlementEngine is ISettlementEngine {
         if (!complianceManager.isUserAllowed(takerOrder.client)) {
             if (takerOrderId != 0) fungibleOrderBook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-            emit UserBlacklisted();
+            emit UserBlacklisted(takerOrder.client);
             return;
         }
 
@@ -198,7 +212,10 @@ contract SettlementEngine is ISettlementEngine {
      */
     function executeNFTTrade(uint256 listingId, uint256 offerId) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         INFTOrderbook.NFTListing memory listing = nftOrderBook.getNFTListing(listingId);
-        INFTOrderbook.NFTOffer   memory offer   = nftOrderBook.getNFTOffer(offerId);
+        INFTOrderbook.NFTOffer   memory offer   = nftOrderBook.getNFTOffer(offerId);        
+
+        if(!listing.active) revert ListingNotActive();
+        if(!offer.active) revert OfferNotActive();
 
         if (!complianceManager.isTokenAllowed(listing.collection)) {
             nftOrderBook.cancelNFTListing(listingId);
@@ -209,13 +226,13 @@ contract SettlementEngine is ISettlementEngine {
 
         if (!complianceManager.isUserAllowed(listing.seller)) {
             nftOrderBook.cancelNFTListing(listingId);
-            emit UserBlacklisted();
+            emit UserBlacklisted(listing.seller);
             return;
         }
 
         if (!complianceManager.isUserAllowed(offer.buyer)) {
             nftOrderBook.cancelNFTOffer(offerId);
-            emit UserBlacklisted();
+            emit UserBlacklisted(offer.buyer);
             return;
         }
 
