@@ -94,4 +94,13 @@ contract ComplianceManager is IComplianceManager, AccessControl, Pausable {
     function canUserWithdraw(address _user) external view returns (bool) {
         return userStatus[_user] != UserStatus.Blacklisted;
     }
+
+    /**
+     * @notice Check if an account has the operator role
+     * @param account Address of the account to check
+     * @return True if the account has the operator role, false otherwise
+     */
+    function hasOperatorRole(address account) external view returns (bool) {
+        return hasRole(OPERATOR_ROLE, account);
+    }
 }

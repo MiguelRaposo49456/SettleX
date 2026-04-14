@@ -18,4 +18,6 @@ interface IComplianceManager {
     // User validation
     function isUserAllowed(address user) external view returns (bool);
     function canUserWithdraw(address user) external view returns (bool);
+
+    function hasOperatorRole(address account) external view returns (bool);
 }
