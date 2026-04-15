@@ -386,6 +386,10 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
     ) internal returns (bool) {
         IFungibleOrderbook.Order memory makerOrder = fungibleOrderbook.getOrder(makerOrderId);
 
+        if (takerOrderId != 0) {
+            takerOrder = fungibleOrderbook.getOrder(takerOrderId);
+        }
+
         assert(makerOrder.tokenIn == takerOrder.tokenOut);
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 

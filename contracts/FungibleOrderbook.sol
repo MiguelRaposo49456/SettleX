@@ -453,7 +453,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
 
             // Begin the inner loop to find a match at this price level
             bool matchFoundAtLevel = false;
-            uint256 makerOrderId   = _getListHead(list);
+            uint256 makerOrderId = _getListHead(list);
 
             while (makerOrderId != 0) {
                 Order storage maker = _orders[makerOrderId];
@@ -481,13 +481,16 @@ contract FungibleOrderbook is IFungibleOrderbook {
                     continue;
                 }
 
+                // Determine how much of this match will consume
+                uint256 fillAmount = maker.amount < remainingTakerAmount ? maker.amount : remainingTakerAmount;
+
                 emit OrderMatched(makerOrderId, takerOrderId);
 
                 // Call SettlementEngine to execute the trade atomically
                 settlementEngine.executeTrade(makerOrderId, takerOrderId);
 
                 // Retrieve the amount left from the taker order
-                remainingTakerAmount = _orders[takerOrderId].amount;
+                remainingTakerAmount -= fillAmount;
 
                 matchFoundAtLevel = true;
                 break; // restart outer loop since best price may have changed
