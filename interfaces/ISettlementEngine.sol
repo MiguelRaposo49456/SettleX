@@ -5,10 +5,10 @@ import "../interfaces/IFungibleOrderbook.sol";
 
 interface ISettlementEngine {
     // Executes a trade between a maker and taker order
-    function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker) external;
+    function executeTrade(uint256 orderIdMaker, uint256 orderIdTaker, uint256 tradeAmount) external;
 
     // Executes a direct trade where the taker order is not stored in the OrderBook
-    function executeDirectTrade(uint256 makerOrderId, IFungibleOrderbook.Order memory takerOrder) external;
+    function executeDirectTrade(uint256 makerOrderId, IFungibleOrderbook.Order memory takerOrder, uint256 tradeAmount) external;
 
     // Executes a trade between an NFT listing and an offer
     function executeNFTTrade(uint256 listingId, uint256 offerId) external;

@@ -25,6 +25,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         uint256 makerOrderId;
         uint256 takerOrderId;
         IFungibleOrderbook.Order takerOrder;
+        uint256 executedAmount;
         bool settled;
     }
 
@@ -211,13 +212,14 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
     /**
      * @notice Queue a matched fungible trade into the current batch
-     * @dev Called by FungibleOrderbook after a match is found via _matchIncoming
-     * @param orderIdMaker ID of the maker order
-     * @param orderIdTaker ID of the taker order stored in the orderbook
+     * @param orderIdMaker    ID of the maker order
+     * @param orderIdTaker    ID of the taker order stored in the orderbook
+     * @param executedAmount  The amount that was deducted from both sides at match time
      */
     function executeTrade(
         uint256 orderIdMaker,
-        uint256 orderIdTaker
+        uint256 orderIdTaker,
+        uint256 executedAmount
     ) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         IFungibleOrderbook.Order memory takerOrder = fungibleOrderbook.getOrder(orderIdTaker);
 
@@ -227,6 +229,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
             makerOrderId: orderIdMaker,
             takerOrderId: orderIdTaker,
             takerOrder: takerOrder,
+            executedAmount: executedAmount,
             settled: false
         }));
 
@@ -236,12 +239,14 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
     /**
      * @notice Queue a direct (take) fungible trade into the current batch
      * @dev Called by FungibleOrderbook for revealTake flows where the taker order is not stored
-     * @param makerOrderId ID of the maker order
-     * @param takerOrder The taker order details provided inline
+     * @param makerOrderId    ID of the maker order
+     * @param takerOrder      The taker order details provided inline
+     * @param executedAmount  The amount that was deducted from the maker at match time
      */
     function executeDirectTrade(
         uint256 makerOrderId,
-        IFungibleOrderbook.Order memory takerOrder
+        IFungibleOrderbook.Order memory takerOrder,
+        uint256 executedAmount
     ) external onlyAuthorizedOrderBook whenNotPaused whenInitialized {
         
         _checkAndRollBatch();
@@ -250,6 +255,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
             makerOrderId: makerOrderId,
             takerOrderId: 0,
             takerOrder: takerOrder,
+            executedAmount: executedAmount,
             settled: false
         }));
 
@@ -283,15 +289,12 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
     /**
      * @notice Check if the current batch has hit its size cap and roll it over if so
-     * @dev Called before every queue operation. Keeps batch sizes bounded without
-     * needing the caller to think about it.
      */
     function _checkAndRollBatch() internal {
         uint256 fungibleCount = _pendingTrades[currentBatchId].length;
         uint256 nftCount = _pendingNFTTrades[currentBatchId].length;
 
         if (fungibleCount + nftCount >= maxBatchSize) {
-            // Current batch is full — seal it and open a fresh one
             _openNewBatch();
         }
     }
@@ -309,12 +312,8 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
     /**
      * @notice Settle all trades in the oldest unsettled batch, then open a new one
-     * @dev Settlement order is strictly FIFO. Failed individual trades are skipped with
-     * an event emitted, but do not cause the entire batch to revert.
      */
     function _settleBatch() internal {
-        // Settle the batch that has been waiting the longest (lastSettledBatchId + 1)
-        // This handles the case where a batch filled up and rolled over before the window expired
         uint256 batchToSettle = lastSettledBatchId + 1;
 
         PendingTrade[] storage fungibleTrades = _pendingTrades[batchToSettle];
@@ -323,15 +322,13 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         uint256 settledCount = 0;
         uint256 nftSettledCount = 0;
 
-        //Fungible trades
         for (uint256 i = 0; i < fungibleTrades.length; i++) {
             PendingTrade storage trade = fungibleTrades[i];
             if (trade.settled) continue;
 
-            // Mark settled BEFORE any external calls
             trade.settled = true;
 
-            bool success = _executeFungibleTrade(trade.makerOrderId, trade.takerOrder, trade.takerOrderId);
+            bool success = _executeFungibleTrade(trade.makerOrderId, trade.takerOrder, trade.takerOrderId, trade.executedAmount);
 
             if (success) {
                 settledCount++;
@@ -340,7 +337,6 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
             }
         }
 
-        //NFT trades
         for (uint256 i = 0; i < nftTrades.length; i++) {
             PendingNFTTrade storage nftTrade = nftTrades[i];
             if (nftTrade.settled) continue;
@@ -358,7 +354,6 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
         lastSettledBatchId = batchToSettle;
 
-        // Open a new batch after settling the current one
         if (batchToSettle == currentBatchId) {
             _openNewBatch();
         }
@@ -382,7 +377,8 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
     function _executeFungibleTrade(
         uint256 makerOrderId,
         IFungibleOrderbook.Order memory takerOrder,
-        uint256 takerOrderId
+        uint256 takerOrderId,
+        uint256 executedAmount
     ) internal returns (bool) {
         IFungibleOrderbook.Order memory makerOrder = fungibleOrderbook.getOrder(makerOrderId);
 
@@ -393,22 +389,10 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         assert(makerOrder.tokenIn == takerOrder.tokenOut);
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
-        // Re-validate active state — orders could have been cancelled during the batch window
-        if (!makerOrder.active || !takerOrder.active) {
-            if (!makerOrder.active) {
-                if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
-                else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-                emit OrderNotActive(makerOrderId);
-            } else {
-                emit OrderNotActive(takerOrderId);
-            }
-            return false;
-        }
-
         // Re-validate token compliance — tokens could be blacklisted after queuing
         if (!complianceManager.isTokenAllowed(makerOrder.tokenIn) || !complianceManager.isTokenAllowed(takerOrder.tokenIn)) {
-            fungibleOrderbook.cancelOrder(makerOrderId);
-            if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
+            fungibleOrderbook.cancelMatchedOrder(makerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.cancelMatchedOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit TokenBlacklisted();
             return false;
@@ -416,37 +400,36 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
         // Re-validate user compliance — users could be blacklisted after queuing
         if (!complianceManager.isUserAllowed(makerOrder.client)) {
-            fungibleOrderbook.cancelOrder(makerOrderId);
-            if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+            fungibleOrderbook.cancelMatchedOrder(makerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit UserBlacklisted(makerOrder.client);
             return false;
         }
 
         if (!complianceManager.isUserAllowed(takerOrder.client)) {
-            if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.cancelMatchedOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+            fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
             emit UserBlacklisted(takerOrder.client);
             return false;
         }
 
-        // Determine executed amount — minimum of both sides
-        // This handles partial fills: the smaller order fills completely,
-        // the larger one gets its remaining amount updated
-        uint256 executedAmount = makerOrder.amount < takerOrder.amount ? makerOrder.amount : takerOrder.amount;
-
         // Re-validate locked balances
         uint256 makerLocked = custodian.lockedBalanceOf(makerOrder.client, makerOrder.tokenOut);
         if (makerLocked < executedAmount) {
-            fungibleOrderbook.cancelOrder(makerOrderId);
-            if (takerOrderId == 0) custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+            fungibleOrderbook.cancelMatchedOrder(makerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit InsufficientLockedBalance(makerLocked, executedAmount);
             return false;
         }
 
         uint256 takerLocked = custodian.lockedBalanceOf(takerOrder.client, takerOrder.tokenOut);
         if (takerLocked < executedAmount) {
-            if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.cancelMatchedOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerLocked);
+            fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
             emit InsufficientLockedBalance(takerLocked, executedAmount);
             return false;
         }
@@ -455,17 +438,27 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, executedAmount);
         custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, executedAmount);
 
-        // Update remaining amounts in the OrderBook
-        // Each order's new remaining = old amount - executedAmount
-        fungibleOrderbook.updateOrderAmount(makerOrderId, makerOrder.amount - executedAmount);
-
-        // Update taker amount only if it has a stored order
-        if (takerOrderId != 0) {
-            fungibleOrderbook.updateOrderAmount(takerOrderId, takerOrder.amount - executedAmount);
-        }
-
         emit TradeExecuted(makerOrderId, takerOrderId, executedAmount);
         return true;
+    }
+
+    /**
+     * @notice Reinstate a stored taker order or unlock a direct taker's funds, depending on
+     * whether the taker has a stored orderbook entry.
+     * @param takerOrderId  0 for direct takes (no stored order), non-zero for matched orders
+     * @param takerOrder    The taker order struct (used for direct-take unlock)
+     * @param amount        The amount to reinstate / unlock
+     */
+    function _reinstateOrUnlock(
+        uint256 takerOrderId,
+        IFungibleOrderbook.Order memory takerOrder,
+        uint256 amount
+    ) internal {
+        if (takerOrderId != 0) {
+            fungibleOrderbook.reinstateOrder(takerOrderId, amount);
+        } else {
+            custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, amount);
+        }
     }
 
     /**
@@ -508,24 +501,16 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
         // If payment is ERC-20
         if (listing.paymentType == INFTOrderbook.AssetType.ERC20) {
-            // NFT goes from seller to buyer
             custodian.internalTransferNFT(listing.seller, offer.buyer, listing.collection, listing.tokenId);
-            // ERC-20 goes from buyer to seller
             custodian.internalTransfer(offer.buyer, listing.seller, listing.paymentToken, listing.paymentAmount);
-            // Refund overpayment if offer exceeded the ask
             if (offer.offerAmount > listing.paymentAmount) {
                 custodian.unlockFunds(offer.buyer, offer.offerToken, offer.offerAmount - listing.paymentAmount);
             }
-
-        // If payment is another NFT
         } else {
-            // Listing NFT goes from seller to buyer
             custodian.internalTransferNFT(listing.seller, offer.buyer, listing.collection, listing.tokenId);
-            // Offer NFT goes from buyer to seller
-            custodian.internalTransferNFT(offer.buyer, listing.seller,offer.offerToken, offer.offerTokenId);
+            custodian.internalTransferNFT(offer.buyer, listing.seller, offer.offerToken, offer.offerTokenId);
         }
 
-        // Deactivate both sides without unlocking since ownership has already been transferred
         nftOrderbook.deactivateListing(listingId);
         nftOrderbook.deactivateOffer(offerId);
 
@@ -536,18 +521,11 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
     //----------------------------------------------View Functions--------------------------------------------------
 
-    /**
-     * @notice Returns the number of pending trades in a given batch
-     */
     function getBatchSize(uint256 batchId) external view returns (uint256 fungible, uint256 nft) {
         fungible = _pendingTrades[batchId].length;
         nft = _pendingNFTTrades[batchId].length;
     }
 
-    /**
-     * @notice Returns how many seconds remain until the current batch window expires
-     * @dev Returns 0 if the window has already expired
-     */
     function timeUntilSettlement() external view returns (uint256) {
         uint256 expiry = batchOpenedAt + settlementWindowSeconds;
         if (block.timestamp >= expiry) return 0;

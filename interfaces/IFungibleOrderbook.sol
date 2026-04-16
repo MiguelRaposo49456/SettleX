@@ -54,12 +54,15 @@ interface IFungibleOrderbook {
     // Cancel an active order and unlock its funds
     function cancelOrder(uint256 orderId) external;
 
-    // Called by the SettlementEngine after a trade to update remaining amount
-    function updateOrderAmount(uint256 orderId, uint256 remainingAmount) external;
+    // Cancel an order that was already matched and its waiting to be settled
+    function cancelMatchedOrder(uint256 orderId) external;
 
     // Returns the full Order struct for a given ID
     function getOrder(uint256 orderId) external view returns (Order memory);
 
     // Returns the full PendingCommit struct for a given commit ID
     function getPendingCommit(uint256 commitId) external view returns (PendingCommit memory);
+
+    // Reinstates a previously matched order back to active with the given amount added back
+    function reinstateOrder(uint256 orderId, uint256 amount) external;
 }

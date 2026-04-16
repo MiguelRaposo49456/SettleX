@@ -72,6 +72,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
     event CommitExpired(uint256 indexed commitId, address indexed client);
     event MakerBlacklisted(uint256 indexed orderId, address indexed maker);
     event TokenBlacklisted();
+    event OrderReinstated(uint256 indexed orderId, uint256 reinstatedAmount);
 
     
     //----------------------------------------------Errors-----------------------------------------------------------
@@ -325,14 +326,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
         _insertIntoBook(orderId, pairId, side, price);
 
         // Attempt matching against the opposite side
-        uint256 remainingAmount = _matchIncoming(
-            orderId,
-            pairId,
-            price,
-            amount,
-            side,
-            partialAllowed
-        );
+        uint256 remainingAmount = _matchIncoming(orderId);
 
         emit OrderPlaced(orderId, msg.sender, pairId, tokenIn, tokenOut, price, remainingAmount, side, partialAllowed);
     }
@@ -381,42 +375,60 @@ contract FungibleOrderbook is IFungibleOrderbook {
         });
 
         // Delegate directly to Settlement Engine
-        settlementEngine.executeDirectTrade(makerOrderId, takerOrder);
+        settlementEngine.executeDirectTrade(makerOrderId, takerOrder, amountToFulfill);
+
+        maker.amount -= amountToFulfill;
+        if (maker.amount == 0) {
+            maker.active = false;
+            _removeFromBook(makerOrderId, maker.pairId, maker.side, maker.price);
+        }
     }
 
     /**
      * @notice Cancel an active order and return locked funds to the client
-     * @dev Callable by the order owner or by the SettlementEngine (blacklist enforcement)
+     * @dev Callable by the order owner
      * @param orderId ID of the order to cancel
      */
     function cancelOrder(uint256 orderId) external whenInitialized {
         Order storage order = _orders[orderId];
 
         if (!order.active) revert OrderNotActive(orderId);
-        if (msg.sender != order.client && msg.sender != address(settlementEngine))
-            revert NotOrderOwner(orderId);
+        if (msg.sender != order.client) revert NotOrderOwner(orderId);
+
+        _cancelOrder(orderId, order);
+    }
+
+
+    /**
+     * @notice Cancel an active order and return locked funds to the client
+     * @dev Callable by the SettlementEngine
+     * @param orderId ID of the order to cancel
+     */
+    function cancelMatchedOrder(uint256 orderId) external onlySettlementEngine whenInitialized {
+        Order storage order = _orders[orderId];
 
         _cancelOrder(orderId, order);
     }
 
     /**
-     * @notice Called by the SettlementEngine after a successful trade
-     * @param orderId ID of the order to update
-     * @param remainingAmount Amount still left to fill after this trade
+     * @notice Restore a matched-but-failed order to active status
+     * @dev Called by the SettlementEngine when a queued trade fails during settlement
+     *      Re-activates the order and adds `amount` back to its remaining amount
+     * @param orderId The ID of the order to reinstate
+     * @param amount  The executedAmount that was deducted at match time
      */
-    function updateOrderAmount(uint256 orderId, uint256 remainingAmount) external onlySettlementEngine whenInitialized {
+    function reinstateOrder(uint256 orderId, uint256 amount) external onlySettlementEngine {
         Order storage order = _orders[orderId];
 
-        order.amount = remainingAmount;
-
-        if (remainingAmount == 0) {
-            order.active = false;
-            _removeFromBook(orderId, order.pairId, order.side, order.price);
-        } else {
-            emit OrderPartiallyFilled(orderId, order.amount, remainingAmount);
+        if(!order.active) {
+            order.active = true;
+            _insertIntoBook(orderId, order.pairId, order.side, order.price);
         }
-    }
 
+        order.amount += amount;
+
+        emit OrderReinstated(orderId, amount);
+    }
 
     //----------------------------------------------Internal Matching Logic------------------------------------------------
 
@@ -428,28 +440,23 @@ contract FungibleOrderbook is IFungibleOrderbook {
      * @return remainingTakerAmount  Amount of baseToken still unmatched after the loop
      */
     function _matchIncoming(
-        uint256 takerOrderId,
-        bytes32 pairId,
-        uint256 price,
-        uint256 amount,
-        uint8 side,
-        bool partialAllowed
+        uint256 takerOrderId
     ) internal returns (uint256 remainingTakerAmount) {
-        remainingTakerAmount = amount;
+        Order storage takerOrder = _orders[takerOrderId];
 
-        while (remainingTakerAmount > 0) {
+        while (takerOrder.amount > 0) {
             // Find best price on the opposite side
-            (bool found, uint256 bestPrice) = _getBestPrice(pairId, side);
+            (bool found, uint256 bestPrice) = _getBestPrice(takerOrder.pairId, takerOrder.side);
             if (!found) break;
 
             // Check price compatibility
-            if (side == BUY  && bestPrice > price) break;
-            if (side == SELL && bestPrice < price) break;
+            if (takerOrder.side == BUY  && bestPrice > takerOrder.price) break;
+            if (takerOrder.side == SELL && bestPrice < takerOrder.price) break;
 
             // Get linked list at this price level
-            StructuredLinkedList.List storage list = (side == BUY)
-                ? _sellOrders[pairId][bestPrice]
-                : _buyOrders[pairId][bestPrice];
+            StructuredLinkedList.List storage list = (takerOrder.side == BUY)
+                ? _sellOrders[takerOrder.pairId][bestPrice]
+                : _buyOrders[takerOrder.pairId][bestPrice];
 
             // Begin the inner loop to find a match at this price level
             bool matchFoundAtLevel = false;
@@ -467,8 +474,8 @@ contract FungibleOrderbook is IFungibleOrderbook {
                 }
 
                 // Check partial fill compatibility
-                bool makerFullyFilled = remainingTakerAmount >= maker.amount;
-                bool takerFullyFilled = maker.amount >= remainingTakerAmount;
+                bool makerFullyFilled = takerOrder.amount >= maker.amount;
+                bool takerFullyFilled = maker.amount >= takerOrder.amount;
 
                 // If maker doesn't allow partials and full fill isn't possible, skip
                 if (!maker.partialAllowed && !makerFullyFilled) {
@@ -476,21 +483,30 @@ contract FungibleOrderbook is IFungibleOrderbook {
                     continue;
                 }
                 // If taker doesn't allow partials and full fill isn't possible, skip
-                if (!partialAllowed && !takerFullyFilled) {
+                if (!takerOrder.partialAllowed && !takerFullyFilled) {
                     makerOrderId = nextId;
                     continue;
                 }
 
                 // Determine how much of this match will consume
-                uint256 fillAmount = maker.amount < remainingTakerAmount ? maker.amount : remainingTakerAmount;
+                uint256 fillAmount = maker.amount < takerOrder.amount ? maker.amount : takerOrder.amount;
 
                 emit OrderMatched(makerOrderId, takerOrderId);
 
                 // Call SettlementEngine to execute the trade atomically
-                settlementEngine.executeTrade(makerOrderId, takerOrderId);
+                settlementEngine.executeTrade(makerOrderId, takerOrderId, fillAmount);
 
-                // Retrieve the amount left from the taker order
-                remainingTakerAmount -= fillAmount;
+                maker.amount -= fillAmount;
+                if (maker.amount == 0) {
+                    maker.active = false;
+                    _removeFromBook(makerOrderId, maker.pairId, maker.side, maker.price);
+                }
+
+                takerOrder.amount -= fillAmount;
+                if(takerOrder.amount == 0) {
+                    takerOrder.active = false;
+                    _removeFromBook(takerOrderId, takerOrder.pairId, takerOrder.side, takerOrder.price);
+                }
 
                 matchFoundAtLevel = true;
                 break; // restart outer loop since best price may have changed
@@ -498,6 +514,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
 
             if (!matchFoundAtLevel) break;
         }
+        return takerOrder.amount;
     }
 
 
@@ -539,11 +556,15 @@ contract FungibleOrderbook is IFungibleOrderbook {
      */
     function _removeFromBook(uint256 orderId, bytes32 pairId, uint8 side, uint256 price) internal {
         if (side == BUY) {
-            _removeFromList(_buyOrders[pairId][price], orderId);
-            if (!_buyOrders[pairId][price].listExists()) _buyTrees[pairId].remove(price);
+            if (_buyOrders[pairId][price].nodeExists(orderId)) {
+                _removeFromList(_buyOrders[pairId][price], orderId);
+                if (!_buyOrders[pairId][price].listExists()) _buyTrees[pairId].remove(price);
+            }
         } else {
-            _removeFromList(_sellOrders[pairId][price], orderId);
-            if (!_sellOrders[pairId][price].listExists()) _sellTrees[pairId].remove(price);
+            if (_sellOrders[pairId][price].nodeExists(orderId)) {
+                _removeFromList(_sellOrders[pairId][price], orderId);
+                if (!_sellOrders[pairId][price].listExists()) _sellTrees[pairId].remove(price);
+            }
         }
     }
 
