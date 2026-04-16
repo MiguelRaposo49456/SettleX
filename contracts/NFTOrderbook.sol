@@ -203,7 +203,7 @@ contract NFTOrderbook is INFTOrderbook {
             paymentToken:   paymentToken,
             paymentAmount:  paymentAmount,
             paymentTokenId: paymentTokenId,
-            active:         true
+            status:         Status.Active
         });
 
         _activeListingByNFT[collection][tokenId] = listingId;
@@ -278,7 +278,7 @@ contract NFTOrderbook is INFTOrderbook {
             offerToken:   offerToken,
             offerAmount:  offerAmount,
             offerTokenId: offerTokenId,
-            active:       true
+            status:       Status.Active
         });
 
         _offersByNFT[collection][tokenId].push(offerId);
@@ -299,7 +299,7 @@ contract NFTOrderbook is INFTOrderbook {
     function cancelNFTListing(uint256 listingId) external whenInitialized {
         NFTListing storage listing = _nftListings[listingId];
 
-        if (!listing.active) revert NotActive(listingId);
+        if (listing.status == Status.Inactive) revert NotActive(listingId);
         if (msg.sender != listing.seller && msg.sender != address(settlementEngine)) revert NotOrderOwner(listingId);
 
         _deactivateListing(listingId);
@@ -313,7 +313,7 @@ contract NFTOrderbook is INFTOrderbook {
     function cancelNFTOffer(uint256 offerId) external whenInitialized {
         NFTOffer storage offer = _nftOffers[offerId];
 
-        if (!offer.active) revert NotActive(offerId);
+        if (offer.status == Status.Inactive) revert NotActive(offerId);
         if (msg.sender != offer.buyer && msg.sender != address(settlementEngine)) revert NotOrderOwner(offerId);
 
         _deactivateOffer(offerId);
@@ -355,7 +355,7 @@ contract NFTOrderbook is INFTOrderbook {
 
         for (uint256 i = 0; i < offerIds.length; i++) {
             NFTOffer storage offer = _nftOffers[offerIds[i]];
-            if (!offer.active) continue;
+            if (offer.status == Status.Inactive) continue;
             if (!_offersMatch(listing, offer)) continue;
 
             // NFT-for-NFT where there is only one possible correct match
@@ -414,7 +414,7 @@ contract NFTOrderbook is INFTOrderbook {
     function _deactivateListing(uint256 listingId) internal {
         NFTListing storage listing = _nftListings[listingId];
         
-        listing.active = false;
+        listing.status = Status.Inactive;
         _activeListingByNFT[listing.collection][listing.tokenId] = 0;
 
         emit NFTListingCancelled(listingId, listing.seller);
@@ -425,8 +425,9 @@ contract NFTOrderbook is INFTOrderbook {
      */
     function _deactivateOffer(uint256 offerId) internal {
         NFTOffer storage offer = _nftOffers[offerId];
-        offer.active = false;
-
+        
+        offer.status = Status.Inactive;
+        
         emit NFTOfferCancelled(offerId, offer.buyer);
     }
 

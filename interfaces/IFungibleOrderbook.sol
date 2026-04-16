@@ -5,6 +5,8 @@ interface IFungibleOrderbook {
 
     enum CommitType { Order, Take, NFTList, NFTOffer }
 
+    enum Status { Active, Matched, Inactive }
+
     struct PendingCommit {
         bytes32 commitHash;
         address client;
@@ -18,7 +20,7 @@ interface IFungibleOrderbook {
         uint256 id;             // Unique order ID
         address client;         // Trader who created the order
         uint8 side;             // Buy or Sell side of the order
-        bool active;            // Whether the order is active or has been filled/cancelled
+        Status status;          // The status of the order (Active, Matched, Inactive)
         bool partialAllowed;    // Whether the order can be partially filled
         bytes32 pairId;         // Canonical ID for the token pair (hash of tokenIn and tokenOut addresses)
         address tokenIn;        // Token the user is receiving
@@ -54,9 +56,6 @@ interface IFungibleOrderbook {
     // Cancel an active order and unlock its funds
     function cancelOrder(uint256 orderId) external;
 
-    // Cancel an order that was already matched and its waiting to be settled
-    function cancelMatchedOrder(uint256 orderId) external;
-
     // Returns the full Order struct for a given ID
     function getOrder(uint256 orderId) external view returns (Order memory);
 
@@ -65,4 +64,7 @@ interface IFungibleOrderbook {
 
     // Reinstates a previously matched order back to active with the given amount added back
     function reinstateOrder(uint256 orderId, uint256 amount) external;
+
+    // Checks if a settled order should be turned to Inactive or remain active based on the remaining amount
+    function updateOrder(uint256 orderId) external;
 }

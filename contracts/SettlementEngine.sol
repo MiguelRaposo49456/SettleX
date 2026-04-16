@@ -72,6 +72,8 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
     event NFTTradeExecuted(uint256 indexed listingId, uint256 indexed offerId, address collection, uint256 tokenId);
     event SettlementWindowUpdated(uint256 oldWindow, uint256 newWindow);
     event MaxBatchSizeUpdated(uint256 oldSize, uint256 newSize);
+    event OrderInactive(uint256 orderId);
+    event BothOrdersInactive(uint256 makerOrderId, uint256 takerOrderId);
 
     //----------------------------------------------Errors-----------------------------------------------------------
     error AlreadyInitialized();
@@ -389,10 +391,29 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         assert(makerOrder.tokenIn == takerOrder.tokenOut);
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
+        if(makerOrder.status == IFungibleOrderbook.Status.Inactive) {
+            if(takerOrder.status != IFungibleOrderbook.Status.Inactive) {
+                if(takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
+                else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+                emit OrderInactive(makerOrderId);
+                return false;
+            }
+            else {
+                emit BothOrdersInactive(makerOrderId, takerOrderId);
+                return false;
+            }
+        }
+
+        if(takerOrder.status != IFungibleOrderbook.Status.Inactive) {
+            fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
+            emit OrderInactive(takerOrderId);
+            return false;
+        }
+
         // Re-validate token compliance — tokens could be blacklisted after queuing
         if (!complianceManager.isTokenAllowed(makerOrder.tokenIn) || !complianceManager.isTokenAllowed(takerOrder.tokenIn)) {
-            fungibleOrderbook.cancelMatchedOrder(makerOrderId);
-            if (takerOrderId != 0) fungibleOrderbook.cancelMatchedOrder(takerOrderId);
+            fungibleOrderbook.cancelOrder(makerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit TokenBlacklisted();
             return false;
@@ -400,7 +421,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
         // Re-validate user compliance — users could be blacklisted after queuing
         if (!complianceManager.isUserAllowed(makerOrder.client)) {
-            fungibleOrderbook.cancelMatchedOrder(makerOrderId);
+            fungibleOrderbook.cancelOrder(makerOrderId);
             if (takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit UserBlacklisted(makerOrder.client);
@@ -408,7 +429,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         }
 
         if (!complianceManager.isUserAllowed(takerOrder.client)) {
-            if (takerOrderId != 0) fungibleOrderbook.cancelMatchedOrder(takerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
             emit UserBlacklisted(takerOrder.client);
@@ -418,7 +439,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         // Re-validate locked balances
         uint256 makerLocked = custodian.lockedBalanceOf(makerOrder.client, makerOrder.tokenOut);
         if (makerLocked < executedAmount) {
-            fungibleOrderbook.cancelMatchedOrder(makerOrderId);
+            fungibleOrderbook.cancelOrder(makerOrderId);
             if (takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
             emit InsufficientLockedBalance(makerLocked, executedAmount);
@@ -427,7 +448,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
         uint256 takerLocked = custodian.lockedBalanceOf(takerOrder.client, takerOrder.tokenOut);
         if (takerLocked < executedAmount) {
-            if (takerOrderId != 0) fungibleOrderbook.cancelMatchedOrder(takerOrderId);
+            if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerLocked);
             fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
             emit InsufficientLockedBalance(takerLocked, executedAmount);
@@ -438,27 +459,11 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, executedAmount);
         custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, executedAmount);
 
+        fungibleOrderbook.updateOrder(makerOrderId);
+        if (takerOrderId != 0) fungibleOrderbook.updateOrder(takerOrderId);
+
         emit TradeExecuted(makerOrderId, takerOrderId, executedAmount);
         return true;
-    }
-
-    /**
-     * @notice Reinstate a stored taker order or unlock a direct taker's funds, depending on
-     * whether the taker has a stored orderbook entry.
-     * @param takerOrderId  0 for direct takes (no stored order), non-zero for matched orders
-     * @param takerOrder    The taker order struct (used for direct-take unlock)
-     * @param amount        The amount to reinstate / unlock
-     */
-    function _reinstateOrUnlock(
-        uint256 takerOrderId,
-        IFungibleOrderbook.Order memory takerOrder,
-        uint256 amount
-    ) internal {
-        if (takerOrderId != 0) {
-            fungibleOrderbook.reinstateOrder(takerOrderId, amount);
-        } else {
-            custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, amount);
-        }
     }
 
     /**
@@ -470,11 +475,11 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         INFTOrderbook.NFTOffer memory offer = nftOrderbook.getNFTOffer(offerId);
 
         // Re-validate active state
-        if (!listing.active) {
+        if (listing.status == INFTOrderbook.Status.Inactive) {
             emit NFTTradeFailed(currentBatchId, listingId, offerId, "listing not active");
             return false;
         }
-        if (!offer.active) {
+        if (offer.status == INFTOrderbook.Status.Inactive) {
             emit NFTTradeFailed(currentBatchId, listingId, offerId, "offer not active");
             return false;
         }

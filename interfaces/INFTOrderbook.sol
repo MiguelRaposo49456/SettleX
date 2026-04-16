@@ -7,6 +7,8 @@ interface INFTOrderbook {
 
     enum AssetType { ERC20, ERC721 }
 
+    enum Status { Active, Inactive }
+
     struct PendingCommit {
         bytes32 commitHash;
         address client;
@@ -25,7 +27,7 @@ interface INFTOrderbook {
         address paymentToken;
         uint256 paymentAmount;
         uint256 paymentTokenId;
-        bool active;
+        Status status;
     }
 
     struct NFTOffer {
@@ -37,7 +39,7 @@ interface INFTOrderbook {
         address offerToken;
         uint256 offerAmount;
         uint256 offerTokenId;
-        bool active;
+        Status status;
     }
 
     // Commit and reveal functions for NFT listings and offers

@@ -66,7 +66,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
     );
     event OrderCancelled(uint256 indexed orderId, address indexed client);
     event OrderMatched(uint256 indexed makerOrderId, uint256 indexed takerOrderId);
-    event OrderPartiallyFilled(uint256 indexed orderId, uint256 matchedAmount, uint256 remainingAmount);
+    event OrderPartiallyFilled(uint256 indexed orderId, uint256 matchedAmount);
     event Initialized(address custodian, address settlementEngine);
     event Committed(uint256 indexed commitId, address indexed client, uint256 commitBlock);
     event CommitExpired(uint256 indexed commitId, address indexed client);
@@ -89,6 +89,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
     error NotOrderOwner(uint256 orderId);
     error NotSettlementEngine();
     error OrderNotActive(uint256 orderId);
+    error OrderWasntMatchedCantReinstate(uint256 orderId);
     error PartialFillNotAllowed();
     error RevealWindowOpen(uint256 commitId);
     error SameToken();
@@ -318,7 +319,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
             price: price,
             amount: amount,
             side: side,
-            active: true,
+            status: Status.Active,
             block: commitBlock,
             partialAllowed: partialAllowed
         });
@@ -334,7 +335,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
     function _takeOrder(uint256 makerOrderId, uint256 takerAmount, uint256 commitBlock) internal {
         Order storage maker = _orders[makerOrderId];
 
-        if (!maker.active) revert OrderNotActive(makerOrderId);
+        if (maker.status == Status.Inactive) revert OrderNotActive(makerOrderId);
 
         if (!complianceManager.isUserAllowed(msg.sender)) revert UserNotAllowed(msg.sender);
         if (!complianceManager.isUserAllowed(maker.client)) {
@@ -369,7 +370,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
             price:          maker.price,
             amount:         amountToFulfill,
             side:           takerSide,
-            active:         true,
+            status:         Status.Active,
             block:          commitBlock,
             partialAllowed: false
         });
@@ -379,7 +380,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
 
         maker.amount -= amountToFulfill;
         if (maker.amount == 0) {
-            maker.active = false;
+            maker.status = Status.Matched;
             _removeFromBook(makerOrderId, maker.pairId, maker.side, maker.price);
         }
     }
@@ -392,20 +393,8 @@ contract FungibleOrderbook is IFungibleOrderbook {
     function cancelOrder(uint256 orderId) external whenInitialized {
         Order storage order = _orders[orderId];
 
-        if (!order.active) revert OrderNotActive(orderId);
+        if (order.status == Status.Inactive) revert OrderNotActive(orderId);
         if (msg.sender != order.client) revert NotOrderOwner(orderId);
-
-        _cancelOrder(orderId, order);
-    }
-
-
-    /**
-     * @notice Cancel an active order and return locked funds to the client
-     * @dev Callable by the SettlementEngine
-     * @param orderId ID of the order to cancel
-     */
-    function cancelMatchedOrder(uint256 orderId) external onlySettlementEngine whenInitialized {
-        Order storage order = _orders[orderId];
 
         _cancelOrder(orderId, order);
     }
@@ -420,14 +409,28 @@ contract FungibleOrderbook is IFungibleOrderbook {
     function reinstateOrder(uint256 orderId, uint256 amount) external onlySettlementEngine {
         Order storage order = _orders[orderId];
 
-        if(!order.active) {
-            order.active = true;
-            _insertIntoBook(orderId, order.pairId, order.side, order.price);
-        }
+        if(order.status == Status.Matched) revert OrderWasntMatchedCantReinstate(orderId);
 
+        order.status = Status.Active;
         order.amount += amount;
 
         emit OrderReinstated(orderId, amount);
+    }
+
+    /**
+     * @notice Checks if a settled order should be turned to Inactive or remain active based on the remaining amount
+     * @dev Called by the SettlementEngine after a trade is executed to update the order status accordingly
+     * @param orderId ID of the order to update
+     */
+    function updateOrder(uint256 orderId) external onlySettlementEngine whenInitialized {
+        Order storage order = _orders[orderId];
+
+        if (order.amount == 0) {
+            order.status = Status.Inactive;
+            _removeFromBook(orderId, order.pairId, order.side, order.price);
+        } else {
+            emit OrderPartiallyFilled(orderId, order.amount);
+        }
     }
 
     //----------------------------------------------Internal Matching Logic------------------------------------------------
@@ -467,8 +470,12 @@ contract FungibleOrderbook is IFungibleOrderbook {
                 uint256 nextId = _getNext(list, makerOrderId);
 
                 // Clean up stale entries lazily
-                if (!maker.active) {
+                if (maker.status == Status.Inactive) {
                     _removeFromList(list, makerOrderId);
+                    makerOrderId = nextId;
+                    continue;
+                }
+                else if (maker.status == Status.Matched) {
                     makerOrderId = nextId;
                     continue;
                 }
@@ -493,20 +500,14 @@ contract FungibleOrderbook is IFungibleOrderbook {
 
                 emit OrderMatched(makerOrderId, takerOrderId);
 
-                // Call SettlementEngine to execute the trade atomically
-                settlementEngine.executeTrade(makerOrderId, takerOrderId, fillAmount);
-
                 maker.amount -= fillAmount;
-                if (maker.amount == 0) {
-                    maker.active = false;
-                    _removeFromBook(makerOrderId, maker.pairId, maker.side, maker.price);
-                }
+                maker.status = Status.Matched;
 
                 takerOrder.amount -= fillAmount;
-                if(takerOrder.amount == 0) {
-                    takerOrder.active = false;
-                    _removeFromBook(takerOrderId, takerOrder.pairId, takerOrder.side, takerOrder.price);
-                }
+                takerOrder.status = Status.Matched;
+
+                // Call SettlementEngine to execute the trade atomically
+                settlementEngine.executeTrade(makerOrderId, takerOrderId, fillAmount);
 
                 matchFoundAtLevel = true;
                 break; // restart outer loop since best price may have changed
@@ -526,7 +527,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
       * @param order Reference to the Order struct in storage
      */
     function _cancelOrder(uint256 orderId, Order storage order) internal {
-        order.active = false;
+        order.status = Status.Inactive;
 
         _removeFromBook(orderId, order.pairId, order.side, order.price);
 
