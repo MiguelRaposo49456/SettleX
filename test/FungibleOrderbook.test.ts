@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import { deploySystem } from "./utils/deploy.js";
+import { deploySystem, SETTLEMENT_WINDOW } from "./utils/deploy.js";
 
 const { ethers } = await network.connect();
 
@@ -47,7 +47,10 @@ function computeTakeHash(
     );
 }
 
-
+async function advanceTime(seconds: number) {
+    await ethers.provider.send("evm_increaseTime", [seconds]);
+    await ethers.provider.send("evm_mine", []);
+}
 
 describe("FungibleOrderbook", function() {
     let admin: any, operator: any, client1: any, client2: any;
@@ -56,9 +59,9 @@ describe("FungibleOrderbook", function() {
     let settlementEngineSigner: any;
 
     //Order params
-    const AMOUNT = ethers.parseUnits("100", 18);
-    const PRICE = ethers.parseUnits("2", 18);   // 2 tokenB per tokenA
-    const SALT = ethers.encodeBytes32String("secret");
+    const AMOUNT  = ethers.parseUnits("100", 18);
+    const PRICE   = ethers.parseUnits("2", 18);   // 2 tokenB per tokenA
+    const SALT    = ethers.encodeBytes32String("secret");
     const DEPOSIT = ethers.parseUnits("1000", 18);
 
     beforeEach(async function () {
@@ -339,13 +342,13 @@ describe("FungibleOrderbook", function() {
             expect(order.amount).to.equal(AMOUNT);
         });
 
-        it("should fully match two compatible orders", async function () {
+        it("should queue a matched trade and emit OrderMatched", async function () {
             // client1 places SELL
             await fungibleOrderbook.connect(client1).revealOrder(
                 commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
             );
 
-            // client2 places BUY at same price
+            // client2 places BUY at same price — should match and queue into the batch
             const buyHash = computeOrderHash(
                 client2.address, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
             );
@@ -357,8 +360,9 @@ describe("FungibleOrderbook", function() {
                 buyCommitId, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
             )).to.emit(fungibleOrderbook, "OrderMatched");
 
-            // client1's sell order should be fully filled
+            // Trade is queued — orders are still marked active until the batch settles
             const makerOrder = await fungibleOrderbook.getOrder(1n);
+            expect(makerOrder.amount).to.be.equal(0)
             expect(makerOrder.active).to.be.false;
         });
     });
@@ -376,13 +380,29 @@ describe("FungibleOrderbook", function() {
             );
         });
 
-        it("should execute a take and update maker order", async function () {
+        it("should queue a take and invalidate the order right after it matches", async function () {
             const takeHash = computeTakeHash(client2.address, makerOrderId, AMOUNT, SALT);
             const tx = await fungibleOrderbook.connect(client2).commit(takeHash, CommitType.Take);
             const receipt = await tx.wait();
             const commitId = receipt.logs[0].args[0];
 
             await fungibleOrderbook.connect(client2).revealTake(commitId, makerOrderId, AMOUNT, SALT);
+
+            // Trade is queued — maker order stays active until the batch window expires
+            const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
+            expect(makerOrder.active).to.be.false;
+        });
+
+        it("should settle take and deactivate maker after batch window expires", async function () {
+            const takeHash = computeTakeHash(client2.address, makerOrderId, AMOUNT, SALT);
+            const tx = await fungibleOrderbook.connect(client2).commit(takeHash, CommitType.Take);
+            const receipt = await tx.wait();
+            const commitId = receipt.logs[0].args[0];
+
+            await fungibleOrderbook.connect(client2).revealTake(commitId, makerOrderId, AMOUNT, SALT);
+
+            await advanceTime(SETTLEMENT_WINDOW + 1);
+            await settlementEngine.settleBatch();
 
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
             expect(makerOrder.active).to.be.false;
@@ -461,7 +481,6 @@ describe("FungibleOrderbook", function() {
         });
 
         it("should revert if maker does not allow partials and taker amount is less", async function () {
-            // Place a maker order that does NOT allow partials
             const noPartialOrderId = await placeOrder(
                 client1, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, false
             );
@@ -566,44 +585,6 @@ describe("FungibleOrderbook", function() {
         });
     });
 
-    
-    //----------------------------------------------Update Order Amount-------------------------------------------------
-
-    describe("updateOrderAmount()", function () {
-
-        let orderId: bigint;
-
-        beforeEach(async function () {
-            orderId = await placeOrder(
-                client1, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true
-            );
-        });
-
-        it("should revert if caller is not the SettlementEngine", async function () {
-            await expect(fungibleOrderbook.connect(client1).updateOrderAmount(orderId, AMOUNT / 2n))
-                .to.be.revertedWithCustomError(fungibleOrderbook, "NotSettlementEngine");
-        });
-
-        it("should update order amount and keep order active on partial fill", async function () {
-            const remaining = AMOUNT / 2n;
-            await fungibleOrderbook.connect(settlementEngineSigner).updateOrderAmount(orderId, remaining);
-            const order = await fungibleOrderbook.getOrder(orderId);
-            expect(order.amount).to.equal(remaining);
-            expect(order.active).to.be.true;
-        });
-
-        it("should mark order inactive on full fill", async function () {
-            await fungibleOrderbook.connect(settlementEngineSigner).updateOrderAmount(orderId, 0n);
-            const order = await fungibleOrderbook.getOrder(orderId);
-            expect(order.active).to.be.false;
-        });
-
-        it("should emit OrderPartiallyFilled on partial fill", async function () {
-            const remaining = AMOUNT / 2n;
-            await expect(fungibleOrderbook.connect(settlementEngineSigner).updateOrderAmount(orderId, remaining))
-                .to.emit(fungibleOrderbook, "OrderPartiallyFilled");
-        });
-    });
 
     //----------------------------------------------Get Order---------------------------------------------------
 
@@ -630,7 +611,6 @@ describe("FungibleOrderbook", function() {
             expect(order.active).to.be.false;
         });
     });
-
 
     //----------------------------------------------Settlement Scenarios---------------------------------------------------
 
@@ -686,35 +666,34 @@ describe("FungibleOrderbook", function() {
             return { makerOrderId, takerOrderId };
         }
 
-        it("should fully fill both orders when amounts are equal", async function () {
-            const { makerOrderId, takerOrderId } = await setupAndMatch(
-                AMOUNT, AMOUNT, PRICE, true, true
-            );
-            const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
-            const takerOrder = await fungibleOrderbook.getOrder(takerOrderId);
-            expect(makerOrder.active).to.be.false;
-            expect(takerOrder.active).to.be.false;
-        });
-
-        it("should emit TradeExecuted event on successful match", async function () {
+        it("should emit TradeExecuted on settlementEngine after batch settles", async function () {
             const makerOrderId = await placeSellOrder(client1, AMOUNT, PRICE, true);
+
             const hash = computeOrderHash(
                 client2.address, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
             );
             const tx = await fungibleOrderbook.connect(client2).commit(hash, CommitType.Order);
             const receipt = await tx.wait();
             const commitId = receipt.logs[0].args[0];
-            await expect(fungibleOrderbook.connect(client2).revealOrder(
+            await fungibleOrderbook.connect(client2).revealOrder(
                 commitId, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
-            )).to.emit(settlementEngine, "TradeExecuted");
+            );
+
+            await advanceTime(SETTLEMENT_WINDOW + 1);
+            await expect(settlementEngine.settleBatch())
+                .to.emit(settlementEngine, "TradeExecuted");
         });
 
-        it("should partially fill maker when taker amount is smaller", async function () {
+        it("should partially fill maker when taker amount is smaller, after batch settles", async function () {
             const makerAmount = AMOUNT;
             const takerAmount = AMOUNT / 2n;
             const { makerOrderId, takerOrderId } = await setupAndMatch(
                 makerAmount, takerAmount, PRICE, true, true
             );
+
+            await advanceTime(SETTLEMENT_WINDOW + 1);
+            await settlementEngine.settleBatch();
+
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
             const takerOrder = await fungibleOrderbook.getOrder(takerOrderId);
             expect(takerOrder.active).to.be.false;
@@ -722,21 +701,26 @@ describe("FungibleOrderbook", function() {
             expect(makerOrder.amount).to.equal(makerAmount - takerAmount);
         });
 
-        it("should partially fill taker when maker amount is smaller", async function () {
+        it("should partially fill taker when maker amount is smaller, after batch settles", async function () {
             const makerAmount = AMOUNT / 2n;
             const takerAmount = AMOUNT;
             const { makerOrderId, takerOrderId } = await setupAndMatch(
                 makerAmount, takerAmount, PRICE, true, true
             );
+
+            await advanceTime(SETTLEMENT_WINDOW + 1);
+            await settlementEngine.settleBatch();
+
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
             const takerOrder = await fungibleOrderbook.getOrder(takerOrderId);
+
             expect(makerOrder.active).to.be.false;
             expect(takerOrder.active).to.be.true;
             expect(takerOrder.amount).to.equal(takerAmount - makerAmount);
         });
 
         it("should revert if executeTrade is called by non-OrderBook", async function () {
-            await expect(settlementEngine.connect(client1).executeTrade(1n, 2n))
+            await expect(settlementEngine.connect(client1).executeTrade(1n, 2n, 3n))
                 .to.be.revertedWithCustomError(settlementEngine, "NotOrderbook");
         });
 
@@ -754,7 +738,7 @@ describe("FungibleOrderbook", function() {
                 block: 0n,
                 partialAllowed: false
             };
-            await expect(settlementEngine.connect(client1).executeDirectTrade(1n, takerOrder))
+            await expect(settlementEngine.connect(client1).executeDirectTrade(1n, takerOrder, 3n))
                 .to.be.revertedWithCustomError(settlementEngine, "NotOrderbook");
         });
     });

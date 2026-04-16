@@ -1,3 +1,6 @@
+export const SETTLEMENT_WINDOW = 60;
+export const MAX_BATCH_SIZE = 10;
+
 export async function deploySystem(ethers: any) {
     const [admin, client1, client2] = await ethers.getSigners();
 
@@ -18,7 +21,7 @@ export async function deploySystem(ethers: any) {
     const fungibleOrderbook = await ethers.deployContract("FungibleOrderbook", [complianceManager.target]);
     const nftOrderbook = await ethers.deployContract("NFTOrderbook", [complianceManager.target]);
     const custodian = await ethers.deployContract("Custodian", [complianceManager.target, mockLendingPool.target, mockWeth.target]);
-    const settlementEngine = await ethers.deployContract("SettlementEngine", [complianceManager.target]);
+    const settlementEngine = await ethers.deployContract("SettlementEngine", [complianceManager.target, SETTLEMENT_WINDOW, MAX_BATCH_SIZE]);
 
     // Wire them together
     await fungibleOrderbook.connect(admin).initialize(custodian.target, settlementEngine.target);

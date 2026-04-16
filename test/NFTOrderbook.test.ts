@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import { deploySystem } from "./utils/deploy.js";
+import { deploySystem, SETTLEMENT_WINDOW } from "./utils/deploy.js";
 
 const { ethers } = await network.connect();
 
@@ -48,6 +48,11 @@ function computeNFTOfferHash(
         ["address", "address", "uint256", "uint8", "address", "uint256", "uint256", "bytes32"],
         [sender, collection, tokenId, offerType, offerToken, offerAmount, offerTokenId, salt]
     );
+}
+
+async function advanceTime(seconds: number) {
+    await ethers.provider.send("evm_increaseTime", [seconds]);
+    await ethers.provider.send("evm_mine", []);
 }
 
 //----------------------------------------------Test Suite--------------------------------------------------
@@ -171,7 +176,6 @@ describe("NFTOrderbook", function () {
         return events[events.length - 1].args.offerId;
     }
 
-
     beforeEach(async function () {
         let tokenA: any, tokenB: any;
         ({
@@ -186,9 +190,9 @@ describe("NFTOrderbook", function () {
         otherPaymentToken = tokenB;
 
         const signers = await ethers.getSigners();
-        operator = signers[1];
-        seller = signers[2];
-        buyer = signers[3];
+        operator   = signers[1];
+        seller     = signers[2];
+        buyer      = signers[3];
         thirdParty = signers[4];
 
         await complianceManager.connect(admin).grantRole(OPERATOR_ROLE, operator.address);
@@ -410,18 +414,18 @@ describe("NFTOrderbook", function () {
                 await nftOrderbook.connect(seller).commit(hash, CommitType.NFTList);
 
                 const revealTx = nftOrderbook.connect(seller).revealNFTList(
-                    predictedId, 
-                    nftCollection.target, 
+                    predictedId,
+                    nftCollection.target,
                     TOKEN_ID,
-                    AssetType.ERC20, 
-                    paymentToken.target, 
-                    PAYMENT_AMOUNT, 
-                    0n, 
+                    AssetType.ERC20,
+                    paymentToken.target,
+                    PAYMENT_AMOUNT,
+                    0n,
                     SALT
                 );
 
                 await expect(revealTx).to.be.revertedWithCustomError(
-                    nftOrderbook, 
+                    nftOrderbook,
                     "CommitAndRevealOnSameBlock"
                 );
 
@@ -440,7 +444,7 @@ describe("NFTOrderbook", function () {
         });
 
         it("should effectively expire the commit once the block deadline is crossed", async function () {
-            await ethers.provider.send("hardhat_mine", ["0x16"]); 
+            await ethers.provider.send("hardhat_mine", ["0x16"]);
 
             await expect(nftOrderbook.connect(seller).revealNFTList(
                 commitId, nftCollection.target, TOKEN_ID,
@@ -500,7 +504,7 @@ describe("NFTOrderbook", function () {
             await nftOrderbook.connect(seller).revealNFTList(
                 newCommitId, nftCollection.target, TOKEN_ID,
                 AssetType.ERC721, otherNFTCollection.target, 0n, OFFER_TOKEN_ID, SALT
-            )
+            );
         });
 
         it("should revert if seller is blacklisted", async function () {
@@ -520,13 +524,27 @@ describe("NFTOrderbook", function () {
             expect(activeListingId).to.equal(1n);
         });
 
-        it("should match immediately if a compatible offer already exists", async function () {
+        it("should queue a trade and emit NFTTradeMatched when a compatible offer already exists", async function () {
             await makeERC20Offer(buyer, nftCollection.target, TOKEN_ID, paymentToken.target, PAYMENT_AMOUNT);
 
+            // NFTTradeMatched fires at queue time (from the orderbook)
             await expect(nftOrderbook.connect(seller).revealNFTList(
                 commitId, nftCollection.target, TOKEN_ID,
                 AssetType.ERC20, paymentToken.target, PAYMENT_AMOUNT, 0n, SALT
-            )).to.emit(settlementEngine, "NFTTradeExecuted").to.emit(nftOrderbook, "NFTTradeMatched").withArgs(1n, 1n);
+            )).to.emit(nftOrderbook, "NFTTradeMatched").withArgs(1n, 1n);
+        });
+
+        it("should emit NFTTradeExecuted on settlementEngine after batch settles", async function () {
+            await makeERC20Offer(buyer, nftCollection.target, TOKEN_ID, paymentToken.target, PAYMENT_AMOUNT);
+
+            await nftOrderbook.connect(seller).revealNFTList(
+                commitId, nftCollection.target, TOKEN_ID,
+                AssetType.ERC20, paymentToken.target, PAYMENT_AMOUNT, 0n, SALT
+            );
+
+            await advanceTime(SETTLEMENT_WINDOW + 1);
+            await expect(settlementEngine.settleBatch())
+                .to.emit(settlementEngine, "NFTTradeExecuted");
         });
 
         it("should NOT match if offer amount is below listing price", async function () {
@@ -720,16 +738,30 @@ describe("NFTOrderbook", function () {
             await nftOrderbook.connect(buyer).revealNFTOffer(
                 nftCommitId, nftCollection.target, TOKEN_ID,
                 AssetType.ERC721, otherNFTCollection.target, 0n, OFFER_TOKEN_ID, SALT
-            )
+            );
         });
 
-        it("should match immediately when a compatible listing already exists", async function () {
+        it("should queue a trade and emit NFTTradeMatched when a compatible listing already exists", async function () {
             await listNFTForERC20(seller, nftCollection.target, TOKEN_ID, paymentToken.target, PAYMENT_AMOUNT);
 
+            // NFTTradeMatched fires at queue time (from the orderbook)
             await expect(nftOrderbook.connect(buyer).revealNFTOffer(
                 commitId, nftCollection.target, TOKEN_ID,
                 AssetType.ERC20, paymentToken.target, PAYMENT_AMOUNT, 0n, SALT
-            )).to.emit(nftOrderbook, "NFTTradeMatched").to.emit(settlementEngine, "NFTTradeExecuted");
+            )).to.emit(nftOrderbook, "NFTTradeMatched");
+        });
+
+        it("should emit NFTTradeExecuted on settlementEngine after batch settles", async function () {
+            await listNFTForERC20(seller, nftCollection.target, TOKEN_ID, paymentToken.target, PAYMENT_AMOUNT);
+
+            await nftOrderbook.connect(buyer).revealNFTOffer(
+                commitId, nftCollection.target, TOKEN_ID,
+                AssetType.ERC20, paymentToken.target, PAYMENT_AMOUNT, 0n, SALT
+            );
+
+            await advanceTime(SETTLEMENT_WINDOW + 1);
+            await expect(settlementEngine.settleBatch())
+                .to.emit(settlementEngine, "NFTTradeExecuted");
         });
 
         it("should NOT match when no active listing exists for the NFT", async function () {
@@ -757,7 +789,7 @@ describe("NFTOrderbook", function () {
             await expect(nftOrderbook.connect(buyer).revealNFTOffer(
                 newCommitId, nftCollection.target, TOKEN_ID,
                 AssetType.ERC20, paymentToken.target, higherAmount, 0n, SALT
-            )).to.emit(nftOrderbook, "NFTTradeMatched").to.emit(settlementEngine, "NFTTradeExecuted");
+            )).to.emit(nftOrderbook, "NFTTradeMatched");
         });
     });
 
@@ -784,8 +816,8 @@ describe("NFTOrderbook", function () {
             await nftOrderbook.connect(seller).cancelNFTListing(listingId);
 
             const [held, locked] = await custodian.nftBalanceOf(
-                seller.address, 
-                nftCollection.target, 
+                seller.address,
+                nftCollection.target,
                 TOKEN_ID
             );
 
@@ -862,8 +894,8 @@ describe("NFTOrderbook", function () {
             await nftOrderbook.connect(buyer).cancelNFTOffer(nftOfferId);
 
             const [held, locked] = await custodian.nftBalanceOf(
-                buyer.address, 
-                otherNFTCollection.target, 
+                buyer.address,
+                otherNFTCollection.target,
                 OFFER_TOKEN_ID
             );
 
@@ -1016,8 +1048,14 @@ describe("NFTOrderbook", function () {
                 seller, nftCollection.target, TOKEN_ID, otherNFTCollection.target, OFFER_TOKEN_ID
             );
 
+            // Trade is queued — listing stays active until batch settles
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.false;
+            expect(listing.active).to.be.true;
+
+            await advanceTime(SETTLEMENT_WINDOW + 1);
+            await settlementEngine.settleBatch();
+
+            expect((await nftOrderbook.getNFTListing(listingId)).active).to.be.false;
         });
 
         it("should NOT match NFT-for-NFT if desired tokenId differs", async function () {
