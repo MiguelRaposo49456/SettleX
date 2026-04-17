@@ -16,6 +16,11 @@ const AssetType = {
     ERC721: 1
 };
 
+const NFTStatus = {
+    Inactive: 0,
+    Active:   1
+};
+
 //----------------------------------------------Off-chain Helpers--------------------------------------------------
 
 function computeNFTListHash(
@@ -340,7 +345,7 @@ describe("NFTOrderbook", function () {
             expect(listing.paymentType).to.equal(AssetType.ERC20);
             expect(listing.paymentToken).to.equal(paymentToken.target);
             expect(listing.paymentAmount).to.equal(PAYMENT_AMOUNT);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
 
         it("should emit NFTListed event", async function () {
@@ -558,7 +563,7 @@ describe("NFTOrderbook", function () {
             const listing = await nftOrderbook.getNFTListing(
                 await nftOrderbook.getActiveListing(nftCollection.target, TOKEN_ID)
             );
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
     });
 
@@ -597,7 +602,7 @@ describe("NFTOrderbook", function () {
             expect(offer.offerType).to.equal(AssetType.ERC20);
             expect(offer.offerToken).to.equal(paymentToken.target);
             expect(offer.offerAmount).to.equal(PAYMENT_AMOUNT);
-            expect(offer.active).to.be.true;
+            expect(offer.status).to.equal(NFTStatus.Active);
 
             const lockedAfter = await custodian.lockedBalanceOf(buyer.address, paymentToken.target);
             expect(lockedAfter).to.equal(lockedBefore + PAYMENT_AMOUNT);
@@ -809,7 +814,7 @@ describe("NFTOrderbook", function () {
         it("should allow seller to cancel their listing", async function () {
             await nftOrderbook.connect(seller).cancelNFTListing(listingId);
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.false;
+            expect(listing.status).to.equal(NFTStatus.Inactive);
         });
 
         it("should unlock the NFT back to the seller on cancel", async function () {
@@ -836,7 +841,7 @@ describe("NFTOrderbook", function () {
         it("should allow SettlementEngine to cancel a listing", async function () {
             await nftOrderbook.connect(settlementEngineSigner).cancelNFTListing(listingId);
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.false;
+            expect(listing.status).to.equal(NFTStatus.Inactive);
         });
 
         it("should revert if caller is neither seller nor SettlementEngine", async function () {
@@ -878,7 +883,7 @@ describe("NFTOrderbook", function () {
         it("should allow buyer to cancel their ERC-20 offer", async function () {
             await nftOrderbook.connect(buyer).cancelNFTOffer(offerId);
             const offer = await nftOrderbook.getNFTOffer(offerId);
-            expect(offer.active).to.be.false;
+            expect(offer.status).to.equal(NFTStatus.Inactive);
         });
 
         it("should unlock ERC-20 funds back to buyer on cancel", async function () {
@@ -908,7 +913,7 @@ describe("NFTOrderbook", function () {
         it("should allow SettlementEngine to cancel an offer", async function () {
             await nftOrderbook.connect(settlementEngineSigner).cancelNFTOffer(offerId);
             const offer = await nftOrderbook.getNFTOffer(offerId);
-            expect(offer.active).to.be.false;
+            expect(offer.status).to.equal(NFTStatus.Inactive);
         });
 
         it("should revert if caller is neither buyer nor SettlementEngine", async function () {
@@ -945,7 +950,7 @@ describe("NFTOrderbook", function () {
             );
             await nftOrderbook.connect(settlementEngineSigner).deactivateListing(listingId);
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.false;
+            expect(listing.status).to.equal(NFTStatus.Inactive);
         });
 
         it("should revert if non-SettlementEngine tries to deactivate a listing", async function () {
@@ -962,7 +967,7 @@ describe("NFTOrderbook", function () {
             );
             await nftOrderbook.connect(settlementEngineSigner).deactivateOffer(offerId);
             const offer = await nftOrderbook.getNFTOffer(offerId);
-            expect(offer.active).to.be.false;
+            expect(offer.status).to.equal(NFTStatus.Inactive);
         });
 
         it("should revert if non-SettlementEngine tries to deactivate an offer", async function () {
@@ -988,7 +993,7 @@ describe("NFTOrderbook", function () {
             );
 
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
 
         it("should pick the highest ERC-20 offer when multiple meet the listing price", async function () {
@@ -1050,12 +1055,12 @@ describe("NFTOrderbook", function () {
 
             // Trade is queued — listing stays active until batch settles
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
 
             await advanceTime(SETTLEMENT_WINDOW + 1);
             await settlementEngine.settleBatch();
 
-            expect((await nftOrderbook.getNFTListing(listingId)).active).to.be.false;
+            expect((await nftOrderbook.getNFTListing(listingId)).status).to.equal(NFTStatus.Inactive);
         });
 
         it("should NOT match NFT-for-NFT if desired tokenId differs", async function () {
@@ -1073,7 +1078,7 @@ describe("NFTOrderbook", function () {
             );
 
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
 
         it("should NOT match if offer payment token differs from listing payment token", async function () {
@@ -1094,7 +1099,7 @@ describe("NFTOrderbook", function () {
             );
 
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
 
         it("should NOT match if offer type mismatches listing type (ERC20 offer vs ERC721 listing)", async function () {
@@ -1103,7 +1108,7 @@ describe("NFTOrderbook", function () {
             );
 
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
 
         it("should skip inactive offers during listing match scan", async function () {
@@ -1118,7 +1123,7 @@ describe("NFTOrderbook", function () {
             );
 
             const listing = await nftOrderbook.getNFTListing(listingId);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
 
         it("should not match offer against a cancelled listing", async function () {
@@ -1133,7 +1138,7 @@ describe("NFTOrderbook", function () {
             );
 
             const offer = await nftOrderbook.getNFTOffer(offerId);
-            expect(offer.active).to.be.true;
+            expect(offer.status).to.equal(NFTStatus.Active);
 
             const events = await nftOrderbook.queryFilter(nftOrderbook.filters.NFTTradeMatched());
             expect(events.length).to.equal(0);
@@ -1159,7 +1164,7 @@ describe("NFTOrderbook", function () {
             expect(listing.paymentToken).to.equal(paymentToken.target);
             expect(listing.paymentAmount).to.equal(PAYMENT_AMOUNT);
             expect(listing.paymentTokenId).to.equal(0n);
-            expect(listing.active).to.be.true;
+            expect(listing.status).to.equal(NFTStatus.Active);
         });
 
         it("getNFTOffer() should return correct offer data", async function () {
@@ -1175,19 +1180,19 @@ describe("NFTOrderbook", function () {
             expect(offer.offerType).to.equal(AssetType.ERC20);
             expect(offer.offerToken).to.equal(paymentToken.target);
             expect(offer.offerAmount).to.equal(PAYMENT_AMOUNT);
-            expect(offer.active).to.be.true;
+            expect(offer.status).to.equal(NFTStatus.Active);
         });
 
         it("getNFTListing() should return empty struct for non-existent id", async function () {
             const listing = await nftOrderbook.getNFTListing(999n);
             expect(listing.seller).to.equal(ethers.ZeroAddress);
-            expect(listing.active).to.be.false;
+            expect(listing.status).to.equal(NFTStatus.Inactive);
         });
 
         it("getNFTOffer() should return empty struct for non-existent id", async function () {
             const offer = await nftOrderbook.getNFTOffer(999n);
             expect(offer.buyer).to.equal(ethers.ZeroAddress);
-            expect(offer.active).to.be.false;
+            expect(offer.status).to.equal(NFTStatus.Inactive);
         });
 
         it("getActiveListing() should return 0 when no listing exists", async function () {

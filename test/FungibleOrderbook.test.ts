@@ -16,6 +16,12 @@ const Side = {
     SELL: 1
 };
 
+const OrderStatus = {
+    Inactive: 0,
+    Matched:  1,
+    Active:   2
+};
+
 const PRICE_PRECISION = ethers.parseUnits("1", 18);
 
 //----------------------------------------------off-chain Helpers--------------------------------------------------
@@ -338,7 +344,7 @@ describe("FungibleOrderbook", function() {
                 commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
             );
             const order = await fungibleOrderbook.getOrder(1n);
-            expect(order.active).to.be.true;
+            expect(order.status).to.equal(OrderStatus.Active);
             expect(order.amount).to.equal(AMOUNT);
         });
 
@@ -362,8 +368,8 @@ describe("FungibleOrderbook", function() {
 
             // Trade is queued — orders are still marked active until the batch settles
             const makerOrder = await fungibleOrderbook.getOrder(1n);
-            expect(makerOrder.amount).to.be.equal(0)
-            expect(makerOrder.active).to.be.false;
+            expect(makerOrder.amount).to.be.equal(0);
+            expect(makerOrder.status).to.equal(OrderStatus.Matched);
         });
     });
 
@@ -380,7 +386,7 @@ describe("FungibleOrderbook", function() {
             );
         });
 
-        it("should queue a take and invalidate the order right after it matches", async function () {
+        it("should queue a take and update the status of the order right after it matches", async function () {
             const takeHash = computeTakeHash(client2.address, makerOrderId, AMOUNT, SALT);
             const tx = await fungibleOrderbook.connect(client2).commit(takeHash, CommitType.Take);
             const receipt = await tx.wait();
@@ -390,7 +396,7 @@ describe("FungibleOrderbook", function() {
 
             // Trade is queued — maker order stays active until the batch window expires
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
-            expect(makerOrder.active).to.be.false;
+            expect(makerOrder.status).to.equal(OrderStatus.Matched);
         });
 
         it("should settle take and deactivate maker after batch window expires", async function () {
@@ -405,7 +411,8 @@ describe("FungibleOrderbook", function() {
             await settlementEngine.settleBatch();
 
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
-            expect(makerOrder.active).to.be.false;
+            expect(makerOrder.amount).to.equal(0);
+            expect(makerOrder.status).to.equal(OrderStatus.Inactive);
         });
 
         it("should revert if commit not found", async function () {
@@ -518,7 +525,7 @@ describe("FungibleOrderbook", function() {
             await fungibleOrderbook.connect(client2).revealTake(commitId, makerOrderId, AMOUNT, SALT);
 
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
-            expect(makerOrder.active).to.be.false;
+            expect(makerOrder.status).to.equal(OrderStatus.Inactive);
         });
 
         it("should cancel maker order and revert if token is blacklisted", async function () {
@@ -532,7 +539,7 @@ describe("FungibleOrderbook", function() {
             await fungibleOrderbook.connect(client2).revealTake(commitId, makerOrderId, AMOUNT, SALT);
 
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
-            expect(makerOrder.active).to.be.false;
+            expect(makerOrder.status).to.equal(OrderStatus.Inactive);
         });
     });
 
@@ -551,7 +558,7 @@ describe("FungibleOrderbook", function() {
         it("should allow order owner to cancel", async function () {
             await fungibleOrderbook.connect(client1).cancelOrder(orderId);
             const order = await fungibleOrderbook.getOrder(orderId);
-            expect(order.active).to.be.false;
+            expect(order.status).to.equal(OrderStatus.Inactive);
         });
 
         it("should unlock funds on cancel", async function () {
@@ -564,7 +571,7 @@ describe("FungibleOrderbook", function() {
         it("should allow SettlementEngine to cancel", async function () {
             await fungibleOrderbook.connect(settlementEngineSigner).cancelOrder(orderId);
             const order = await fungibleOrderbook.getOrder(orderId);
-            expect(order.active).to.be.false;
+            expect(order.status).to.equal(OrderStatus.Inactive);
         });
 
         it("should revert if caller is not owner or SettlementEngine", async function () {
@@ -601,14 +608,14 @@ describe("FungibleOrderbook", function() {
             expect(order.price).to.equal(PRICE);
             expect(order.amount).to.equal(AMOUNT);
             expect(order.side).to.equal(Side.SELL);
-            expect(order.active).to.be.true;
+            expect(order.status).to.equal(OrderStatus.Active);
             expect(order.partialAllowed).to.be.true;
         });
 
         it("should return empty order for non-existent id", async function () {
             const order = await fungibleOrderbook.getOrder(999n);
             expect(order.client).to.equal(ethers.ZeroAddress);
-            expect(order.active).to.be.false;
+            expect(order.status).to.equal(OrderStatus.Inactive);
         });
     });
 
@@ -696,8 +703,8 @@ describe("FungibleOrderbook", function() {
 
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
             const takerOrder = await fungibleOrderbook.getOrder(takerOrderId);
-            expect(takerOrder.active).to.be.false;
-            expect(makerOrder.active).to.be.true;
+            expect(takerOrder.status).to.equal(OrderStatus.Inactive);
+            expect(makerOrder.status).to.equal(OrderStatus.Active);
             expect(makerOrder.amount).to.equal(makerAmount - takerAmount);
         });
 
@@ -714,8 +721,8 @@ describe("FungibleOrderbook", function() {
             const makerOrder = await fungibleOrderbook.getOrder(makerOrderId);
             const takerOrder = await fungibleOrderbook.getOrder(takerOrderId);
 
-            expect(makerOrder.active).to.be.false;
-            expect(takerOrder.active).to.be.true;
+            expect(makerOrder.status).to.equal(OrderStatus.Inactive);
+            expect(takerOrder.status).to.equal(OrderStatus.Active);
             expect(takerOrder.amount).to.equal(takerAmount - makerAmount);
         });
 
@@ -724,7 +731,7 @@ describe("FungibleOrderbook", function() {
                 .to.be.revertedWithCustomError(settlementEngine, "NotOrderbook");
         });
 
-        it("should revert if executeDirectTrade is called by non-OrderBook", async function () {
+        it("should revert if executeDirectTrade is called by non-Orderbook", async function () {
             const takerOrder: any = {
                 id: 0n,
                 client: client2.address,
@@ -733,8 +740,9 @@ describe("FungibleOrderbook", function() {
                 tokenOut: tokenB.target,
                 price: PRICE,
                 amount: AMOUNT,
+                lockedAmount: AMOUNT,
                 side: Side.BUY,
-                active: true,
+                status: OrderStatus.Active,
                 block: 0n,
                 partialAllowed: false
             };

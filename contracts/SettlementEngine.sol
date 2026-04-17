@@ -186,8 +186,9 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
      * @notice Chainlink Automation check — returns true when the batch window has expired
      * and there are pending trades to settle
      */
-    function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory) {
+    function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {
         upkeepNeeded = _batchReady();
+        performData = bytes("");
     }
 
     /**
@@ -328,9 +329,16 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
             PendingTrade storage trade = fungibleTrades[i];
             if (trade.settled) continue;
 
-            trade.settled = true;
+            bool success = _executeFungibleTrade(
+                trade.makerOrderId,
+                trade.takerOrder,
+                trade.takerOrderId,
+                trade.executedAmount,
+                batchToSettle,
+                i
+            );
 
-            bool success = _executeFungibleTrade(trade.makerOrderId, trade.takerOrder, trade.takerOrderId, trade.executedAmount);
+            trade.settled = true;
 
             if (success) {
                 settledCount++;
@@ -380,7 +388,9 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         uint256 makerOrderId,
         IFungibleOrderbook.Order memory takerOrder,
         uint256 takerOrderId,
-        uint256 executedAmount
+        uint256 executedAmount,
+        uint256 batchId,
+        uint256 tradeIndex
     ) internal returns (bool) {
         IFungibleOrderbook.Order memory makerOrder = fungibleOrderbook.getOrder(makerOrderId);
 
@@ -404,7 +414,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
             }
         }
 
-        if(takerOrder.status != IFungibleOrderbook.Status.Inactive) {
+        if(takerOrder.status == IFungibleOrderbook.Status.Inactive) {
             fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
             emit OrderInactive(takerOrderId);
             return false;
@@ -459,11 +469,40 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, executedAmount);
         custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, executedAmount);
 
-        fungibleOrderbook.updateOrder(makerOrderId);
-        if (takerOrderId != 0) fungibleOrderbook.updateOrder(takerOrderId);
+        fungibleOrderbook.consumeLockedAmount(makerOrderId, executedAmount);
+        if (takerOrderId != 0) {
+            fungibleOrderbook.consumeLockedAmount(takerOrderId, executedAmount);
+        }
+
+        bool makerHasFutureTrades = _hasFutureTradeForOrder(batchId, tradeIndex, makerOrderId);
+        fungibleOrderbook.updateOrder(makerOrderId, makerHasFutureTrades);
+
+        if (takerOrderId != 0) {
+            bool takerHasFutureTrades = _hasFutureTradeForOrder(batchId, tradeIndex, takerOrderId);
+            fungibleOrderbook.updateOrder(takerOrderId, takerHasFutureTrades);
+        }
 
         emit TradeExecuted(makerOrderId, takerOrderId, executedAmount);
         return true;
+    }
+
+    function _hasFutureTradeForOrder(
+        uint256 batchId,
+        uint256 tradeIndex,
+        uint256 orderId
+    ) internal view returns (bool) {
+        if (orderId == 0) return false;
+
+        PendingTrade[] storage trades = _pendingTrades[batchId];
+        for (uint256 i = tradeIndex + 1; i < trades.length; i++) {
+            PendingTrade storage t = trades[i];
+            if (t.settled) continue;
+            if (t.makerOrderId == orderId || t.takerOrderId == orderId) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

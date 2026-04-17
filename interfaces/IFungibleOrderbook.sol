@@ -5,7 +5,7 @@ interface IFungibleOrderbook {
 
     enum CommitType { Order, Take, NFTList, NFTOffer }
 
-    enum Status { Active, Matched, Inactive }
+    enum Status { Inactive, Matched, Active }
 
     struct PendingCommit {
         bytes32 commitHash;
@@ -27,6 +27,7 @@ interface IFungibleOrderbook {
         address tokenOut;       // Token the user is giving
         uint256 price;          // Price expressed in tokenOut/tokenIn or the quote token for each base token like USDC per ETH
         uint256 amount;         // Amount of tokenIn the user wants to buy
+        uint256 lockedAmount;   // Amount of tokenOut still reserved for this order
         uint256 block;          // Block number when the order was created
     }
 
@@ -65,6 +66,10 @@ interface IFungibleOrderbook {
     // Reinstates a previously matched order back to active with the given amount added back
     function reinstateOrder(uint256 orderId, uint256 amount) external;
 
-    // Checks if a settled order should be turned to Inactive or remain active based on the remaining amount
-    function updateOrder(uint256 orderId) external;
+    // Reduces the reserved escrow for a settled order by the amount just executed
+    function consumeLockedAmount(uint256 orderId, uint256 amount) external;
+
+    // Checks if a settled order should remain Matched for later trades in the same batch,
+    // or transition to Inactive/Active based on the remaining amount
+    function updateOrder(uint256 orderId, bool keepMatched) external;
 }

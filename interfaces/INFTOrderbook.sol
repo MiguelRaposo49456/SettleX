@@ -7,7 +7,7 @@ interface INFTOrderbook {
 
     enum AssetType { ERC20, ERC721 }
 
-    enum Status { Active, Inactive }
+    enum Status { Inactive, Active }
 
     struct PendingCommit {
         bytes32 commitHash;
