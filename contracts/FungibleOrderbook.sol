@@ -185,8 +185,8 @@ contract FungibleOrderbook is IFungibleOrderbook {
      * @param  commitId ID returned by commit()
      * @param  tokenIn Token the client wants to receive
      * @param  tokenOut Token the client is giving
-     * @param  price Quote tokens per base token, scaled by PRICE_PRECISION
-     * @param  amount Amount of baseToken to buy or sell
+     * @param  amountIn Amount of tokenIn the client wants to receive
+     * @param  amountOut Amount of tokenOut the client wants to give
      * @param  side BUY (0) or SELL (1)
      * @param  partialAllowed Whether partial fills are acceptable
      * @param  salt Secret random value used when computing the commit hash
@@ -195,8 +195,8 @@ contract FungibleOrderbook is IFungibleOrderbook {
         uint256 commitId,
         address tokenIn,
         address tokenOut,
-        uint256 price,
-        uint256 amount,
+        uint256 amountIn,
+        uint256 amountOut,
         uint8 side,
         bool partialAllowed,
         bytes32 salt
@@ -217,8 +217,8 @@ contract FungibleOrderbook is IFungibleOrderbook {
             msg.sender,
             tokenIn,
             tokenOut,
-            price,
-            amount,
+            amountIn,
+            amountOut,
             side,
             partialAllowed,
             salt
@@ -229,17 +229,19 @@ contract FungibleOrderbook is IFungibleOrderbook {
         pending.revealed = true;
 
         // Input validation
-        if (amount == 0) revert ZeroAmount();
-        if (price  == 0) revert ZeroPrice();
+        if (amountIn == 0 || amountOut == 0) revert ZeroAmount();
         if (tokenIn == tokenOut) revert SameToken();
         if (side != BUY && side != SELL) revert InvalidSide();
+
+        uint256 price = _derivePrice(side, amountIn, amountOut);
+        if (price == 0) revert ZeroPrice();
 
         if (!complianceManager.isTokenAllowed(tokenIn) || !complianceManager.isTokenAllowed(tokenOut))
             revert TokenNotAllowed();
         if (!complianceManager.isUserAllowed(msg.sender))
             revert UserNotAllowed(msg.sender);
 
-        _placeOrder(tokenIn, tokenOut, price, amount, side, partialAllowed, pending.commitBlock);
+        _placeOrder(tokenIn, tokenOut, amountIn, amountOut, price, side, partialAllowed, pending.commitBlock);
     }
     
     /**
@@ -291,24 +293,27 @@ contract FungibleOrderbook is IFungibleOrderbook {
      *   4. If partially or not matched, store the order
      * @param tokenIn        Token the client wants to receive
      * @param tokenOut       Token the client is giving
-     * @param price          Quote tokens per base token, scaled by PRICE_PRECISION
-     * @param amount         Amount of baseToken to buy or sell
+     * @param amountIn       Amount of tokenIn requested
+     * @param amountOut      Amount of tokenOut provided
+     * @param price          Derived price scaled by PRICE_PRECISION
      * @param partialAllowed Whether partial fills are acceptable
      * @return orderId       ID of the stored order, or 0 if fully matched immediately
      */
     function _placeOrder(
         address tokenIn,
         address tokenOut,
+        uint256 amountIn,
+        uint256 amountOut,
         uint256 price,
-        uint256 amount,
         uint8 side,
         bool partialAllowed,
         uint256 commitBlock
     ) internal returns (uint256 orderId) {
         // Derive canonical pair and side
         bytes32 pairId = _getPairId(tokenIn, tokenOut);
+        uint256 normalizedAmount = _normalizedAmount(tokenIn, tokenOut, amountIn, amountOut);
 
-        uint256 lockAmount = _computeLockAmount(side, amount, price);
+        uint256 lockAmount = amountOut;
         custodian.lockFunds(msg.sender, tokenOut, lockAmount);
 
         // Store the order with remaining amount
@@ -321,7 +326,7 @@ contract FungibleOrderbook is IFungibleOrderbook {
             tokenIn: tokenIn,
             tokenOut: tokenOut,
             price: price,
-            amount: amount,
+            amount: normalizedAmount,
             lockedAmount: lockAmount,
             side: side,
             status: Status.Active,
@@ -361,9 +366,10 @@ contract FungibleOrderbook is IFungibleOrderbook {
         if (!maker.partialAllowed && amountToFulfill < maker.amount) revert PartialFillNotAllowed();
 
         uint8 takerSide = maker.side == BUY ? SELL : BUY;
+        uint256 makerReceivesAmount = _tokenInAmountForFill(maker, amountToFulfill);
 
         // Lock taker funds
-        uint256 lockAmount = _computeLockAmount(takerSide, amountToFulfill, maker.price);
+        uint256 lockAmount = makerReceivesAmount;
         custodian.lockFunds(msg.sender, maker.tokenIn, lockAmount);
 
         // Build taker order as a memory struct — never stored in the book
@@ -634,13 +640,48 @@ contract FungibleOrderbook is IFungibleOrderbook {
         return next;
     }
 
-    /**
-     * @notice How many tokenOut to lock for a given order
-     * @dev SELL: gives baseToken  → lock `amount` baseTokens
-     *      BUY:  gives quoteToken → lock `amount * price / PRICE_PRECISION` quoteTokens
-     */
-    function _computeLockAmount(uint8 side, uint256 amount, uint256 price) internal pure returns (uint256) {
-        return side == SELL ? amount : (amount * price) / PRICE_PRECISION;
+    function _normalizedAmount(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 amountOut
+    ) internal pure returns (uint256) {
+        return tokenIn < tokenOut ? amountIn : amountOut;
+    }
+
+    function _derivePrice(uint8 side, uint256 amountIn, uint256 amountOut) internal pure returns (uint256) {
+        if (side == BUY) {
+            return (amountOut * PRICE_PRECISION) / amountIn;
+        }
+        return (amountIn * PRICE_PRECISION) / amountOut;
+    }
+
+    function _tokenOutAmountForFill(Order memory order, uint256 fillAmount) internal pure returns (uint256) {
+        bool normalizedIsTokenIn = order.tokenIn < order.tokenOut;
+
+        if (!normalizedIsTokenIn) {
+            return fillAmount;
+        }
+
+        if (order.side == BUY) {
+            return (fillAmount * order.price) / PRICE_PRECISION;
+        }
+
+        return (fillAmount * PRICE_PRECISION) / order.price;
+    }
+
+    function _tokenInAmountForFill(Order memory order, uint256 fillAmount) internal pure returns (uint256) {
+        bool normalizedIsTokenIn = order.tokenIn < order.tokenOut;
+
+        if (normalizedIsTokenIn) {
+            return fillAmount;
+        }
+
+        if (order.side == BUY) {
+            return (fillAmount * PRICE_PRECISION) / order.price;
+        }
+
+        return (fillAmount * order.price) / PRICE_PRECISION;
     }
 
     /**

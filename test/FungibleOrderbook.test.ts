@@ -24,6 +24,40 @@ const OrderStatus = {
 
 const PRICE_PRECISION = ethers.parseUnits("1", 18);
 
+function quoteToOrderAmounts(side: number, price: bigint, amount: bigint): { amountIn: bigint; amountOut: bigint } {
+    if (side === Side.BUY) {
+        return {
+            amountIn: amount,
+            amountOut: (amount * price) / PRICE_PRECISION
+        };
+    }
+
+    return {
+        amountIn: (amount * price) / PRICE_PRECISION,
+        amountOut: amount
+    };
+}
+
+function normalizedAmount(
+    tokenIn: string,
+    tokenOut: string,
+    amountIn: bigint,
+    amountOut: bigint
+): bigint {
+    return BigInt(tokenIn) < BigInt(tokenOut) ? amountIn : amountOut;
+}
+
+function normalizedAmountFromQuote(
+    tokenIn: string,
+    tokenOut: string,
+    side: number,
+    price: bigint,
+    amount: bigint
+): bigint {
+    const { amountIn, amountOut } = quoteToOrderAmounts(side, price, amount);
+    return normalizedAmount(tokenIn, tokenOut, amountIn, amountOut);
+}
+
 //----------------------------------------------off-chain Helpers--------------------------------------------------
 function computeOrderHash(
     sender: string,
@@ -35,9 +69,10 @@ function computeOrderHash(
     partialAllowed: boolean,
     salt: string
 ): string {
+    const { amountIn, amountOut } = quoteToOrderAmounts(side, price, amount);
     return ethers.solidityPackedKeccak256(
         ["address", "address", "address", "uint256", "uint256", "uint8", "bool", "bytes32"],
-        [sender, tokenIn, tokenOut, price, amount, side, partialAllowed, salt]
+        [sender, tokenIn, tokenOut, amountIn, amountOut, side, partialAllowed, salt]
     );
 }
 
@@ -103,6 +138,30 @@ describe("FungibleOrderbook", function() {
         await custodian.connect(client2).deposit(tokenB.target, DEPOSIT);
     });
 
+    async function revealOrder(
+        client: any,
+        commitId: bigint,
+        tokenIn: string,
+        tokenOut: string,
+        price: bigint,
+        amount: bigint,
+        side: number,
+        partialAllowed: boolean,
+        salt: string
+    ) {
+        const { amountIn, amountOut } = quoteToOrderAmounts(side, price, amount);
+        return fungibleOrderbook.connect(client).revealOrder(
+            commitId,
+            tokenIn,
+            tokenOut,
+            amountIn,
+            amountOut,
+            side,
+            partialAllowed,
+            salt
+        );
+    }
+
     //----------------------------------------------off-chain Helpers---------------------------------------------------
     async function placeOrder(
         client: any,
@@ -120,9 +179,7 @@ describe("FungibleOrderbook", function() {
         const receipt = await tx.wait();
         const commitId = receipt.logs[0].args[0];
 
-        await fungibleOrderbook.connect(client).revealOrder(
-            commitId, tokenIn, tokenOut, price, amount, side, partialAllowed, SALT
-        );
+        await revealOrder(client, commitId, tokenIn, tokenOut, price, amount, side, partialAllowed, SALT);
 
         // Return the orderId from the OrderPlaced event
         const filter = fungibleOrderbook.filters.OrderPlaced();
@@ -215,29 +272,126 @@ describe("FungibleOrderbook", function() {
         });
 
         it("should place an order and lock funds on successful reveal", async function () {
-            await fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            );
+            await revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT);
             const lockedAmount = await custodian.lockedBalanceOf(client1.address, tokenA.target);
             expect(lockedAmount).to.equal(AMOUNT);
         });
 
+        it("should normalize stored amount and derive price correctly for SELL", async function () {
+            const amountIn = ethers.parseUnits("250", 18);
+            const amountOut = ethers.parseUnits("100", 18);
+            const expectedPrice = (amountIn * PRICE_PRECISION) / amountOut;
+            const expectedNormalized = normalizedAmount(
+                tokenB.target,
+                tokenA.target,
+                amountIn,
+                amountOut
+            );
+
+            const hash = ethers.solidityPackedKeccak256(
+                ["address", "address", "address", "uint256", "uint256", "uint8", "bool", "bytes32"],
+                [client1.address, tokenB.target, tokenA.target, amountIn, amountOut, Side.SELL, true, SALT]
+            );
+
+            const tx = await fungibleOrderbook.connect(client1).commit(hash, CommitType.Order);
+            const receipt = await tx.wait();
+            const localCommitId = receipt.logs[0].args[0];
+
+            await fungibleOrderbook.connect(client1).revealOrder(
+                localCommitId,
+                tokenB.target,
+                tokenA.target,
+                amountIn,
+                amountOut,
+                Side.SELL,
+                true,
+                SALT
+            );
+
+            const order = await fungibleOrderbook.getOrder(1n);
+            expect(order.price).to.equal(expectedPrice);
+            expect(order.amount).to.equal(expectedNormalized);
+        });
+
+        it("should normalize stored amount and derive price correctly for BUY", async function () {
+            const amountIn = ethers.parseUnits("80", 18);
+            const amountOut = ethers.parseUnits("120", 18);
+            const expectedPrice = (amountOut * PRICE_PRECISION) / amountIn;
+            const expectedNormalized = normalizedAmount(
+                tokenA.target,
+                tokenB.target,
+                amountIn,
+                amountOut
+            );
+
+            const hash = ethers.solidityPackedKeccak256(
+                ["address", "address", "address", "uint256", "uint256", "uint8", "bool", "bytes32"],
+                [client1.address, tokenA.target, tokenB.target, amountIn, amountOut, Side.BUY, true, SALT]
+            );
+
+            const tx = await fungibleOrderbook.connect(client1).commit(hash, CommitType.Order);
+            const receipt = await tx.wait();
+            const localCommitId = receipt.logs[0].args[0];
+
+            await fungibleOrderbook.connect(client1).revealOrder(
+                localCommitId,
+                tokenA.target,
+                tokenB.target,
+                amountIn,
+                amountOut,
+                Side.BUY,
+                true,
+                SALT
+            );
+
+            const order = await fungibleOrderbook.getOrder(1n);
+            expect(order.price).to.equal(expectedPrice);
+            expect(order.amount).to.equal(expectedNormalized);
+        });
+
+        it("should lock exactly amountOut on reveal", async function () {
+            const amountIn = ethers.parseUnits("40", 18);
+            const amountOut = ethers.parseUnits("90", 18);
+
+            const hash = ethers.solidityPackedKeccak256(
+                ["address", "address", "address", "uint256", "uint256", "uint8", "bool", "bytes32"],
+                [client1.address, tokenA.target, tokenB.target, amountIn, amountOut, Side.BUY, true, SALT]
+            );
+
+            const tx = await fungibleOrderbook.connect(client1).commit(hash, CommitType.Order);
+            const receipt = await tx.wait();
+            const localCommitId = receipt.logs[0].args[0];
+
+            const lockedBefore = await custodian.lockedBalanceOf(client1.address, tokenB.target);
+
+            await fungibleOrderbook.connect(client1).revealOrder(
+                localCommitId,
+                tokenA.target,
+                tokenB.target,
+                amountIn,
+                amountOut,
+                Side.BUY,
+                true,
+                SALT
+            );
+
+            const lockedAfter = await custodian.lockedBalanceOf(client1.address, tokenB.target);
+            expect(lockedAfter - lockedBefore).to.equal(amountOut);
+        });
+
         it("should emit OrderPlaced on successful reveal", async function () {
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.emit(fungibleOrderbook, "OrderPlaced");
+            await expect(revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.emit(fungibleOrderbook, "OrderPlaced");
         });
 
         it("should revert if commit not found", async function () {
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                999n, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "CommitNotFound");
+            await expect(revealOrder(client1, 999n, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "CommitNotFound");
         });
 
         it("should revert if caller is not the commit owner", async function () {
-            await expect(fungibleOrderbook.connect(client2).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "NotCommitOwner");
+            await expect(revealOrder(client2, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "NotCommitOwner");
         });
 
         it("should revert if commit type is Take", async function () {
@@ -246,31 +400,25 @@ describe("FungibleOrderbook", function() {
             const receipt = await tx.wait();
             const takeCommitId = receipt.logs[0].args[0];
 
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                takeCommitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "WrongCommitType");
+            await expect(revealOrder(client1, takeCommitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "WrongCommitType");
         });
 
         it("should revert if already revealed", async function () {
-            await fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            );
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "CommitAlreadyRevealed");
+            await revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT);
+            await expect(revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "CommitAlreadyRevealed");
         });
 
         it("should revert if reveal deadline has passed", async function () {
             await ethers.provider.send("hardhat_mine", ["0x15"]); // mine 21 blocks
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "CommitExpiredError");
+            await expect(revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "CommitExpiredError");
         });
 
         it("should revert if hash does not match", async function () {
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, false, SALT // partialAllowed differs
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "CommitHashMismatch");
+            await expect(revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, false, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "CommitHashMismatch");
         });
 
         it("should revert on zero amount", async function () {
@@ -281,21 +429,23 @@ describe("FungibleOrderbook", function() {
             const receipt = await tx.wait();
             const newCommitId = receipt.logs[0].args[0];
 
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                newCommitId, tokenB.target, tokenA.target, PRICE, 0n, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "ZeroAmount");
+            await expect(revealOrder(client1, newCommitId, tokenB.target, tokenA.target, PRICE, 0n, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "ZeroAmount");
         });
 
         it("should revert on zero price", async function () {
-            const hash = computeOrderHash(
-                client1.address, tokenB.target, tokenA.target, 0n, AMOUNT, Side.SELL, true, SALT
+            const tinyAmountIn = 1n;
+            const hugeAmountOut = 2n * PRICE_PRECISION;
+            const hash = ethers.solidityPackedKeccak256(
+                ["address", "address", "address", "uint256", "uint256", "uint8", "bool", "bytes32"],
+                [client1.address, tokenB.target, tokenA.target, tinyAmountIn, hugeAmountOut, Side.SELL, true, SALT]
             );
             const tx = await fungibleOrderbook.connect(client1).commit(hash, CommitType.Order);
             const receipt = await tx.wait();
             const newCommitId = receipt.logs[0].args[0];
 
             await expect(fungibleOrderbook.connect(client1).revealOrder(
-                newCommitId, tokenB.target, tokenA.target, 0n, AMOUNT, Side.SELL, true, SALT
+                newCommitId, tokenB.target, tokenA.target, tinyAmountIn, hugeAmountOut, Side.SELL, true, SALT
             )).to.be.revertedWithCustomError(fungibleOrderbook, "ZeroPrice");
         });
 
@@ -307,9 +457,8 @@ describe("FungibleOrderbook", function() {
             const receipt = await tx.wait();
             const newCommitId = receipt.logs[0].args[0];
 
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                newCommitId, tokenA.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "SameToken");
+            await expect(revealOrder(client1, newCommitId, tokenA.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "SameToken");
         });
 
         it("should revert on invalid side", async function () {
@@ -320,39 +469,39 @@ describe("FungibleOrderbook", function() {
             const receipt = await tx.wait();
             const newCommitId = receipt.logs[0].args[0];
 
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                newCommitId, tokenB.target, tokenA.target, PRICE, AMOUNT, 5, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "InvalidSide");
+            await expect(revealOrder(client1, newCommitId, tokenB.target, tokenA.target, PRICE, AMOUNT, 5, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "InvalidSide");
         });
 
         it("should revert if token is blacklisted", async function () {
             await complianceManager.connect(operator).blacklistToken(tokenA.target);
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "TokenNotAllowed");
+            await expect(revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "TokenNotAllowed");
         });
 
         it("should revert if user is blacklisted", async function () {
             await complianceManager.connect(operator).setUserStatus(client1.address, 2);
-            await expect(fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            )).to.be.revertedWithCustomError(fungibleOrderbook, "UserNotAllowed");
+            await expect(revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT))
+                .to.be.revertedWithCustomError(fungibleOrderbook, "UserNotAllowed");
         });
 
         it("should store order in book if no match found", async function () {
-            await fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            );
+            await revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT);
             const order = await fungibleOrderbook.getOrder(1n);
+            const expectedAmount = normalizedAmountFromQuote(
+                tokenB.target,
+                tokenA.target,
+                Side.SELL,
+                PRICE,
+                AMOUNT
+            );
             expect(order.status).to.equal(OrderStatus.Active);
-            expect(order.amount).to.equal(AMOUNT);
+            expect(order.amount).to.equal(expectedAmount);
         });
 
         it("should queue a matched trade and emit OrderMatched", async function () {
             // client1 places SELL
-            await fungibleOrderbook.connect(client1).revealOrder(
-                commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT
-            );
+            await revealOrder(client1, commitId, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true, SALT);
 
             // client2 places BUY at same price — should match and queue into the batch
             const buyHash = computeOrderHash(
@@ -362,9 +511,8 @@ describe("FungibleOrderbook", function() {
             const buyReceipt = await buyTx.wait();
             const buyCommitId = buyReceipt.logs[0].args[0];
 
-            await expect(fungibleOrderbook.connect(client2).revealOrder(
-                buyCommitId, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
-            )).to.emit(fungibleOrderbook, "OrderMatched");
+            await expect(revealOrder(client2, buyCommitId, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT))
+                .to.emit(fungibleOrderbook, "OrderMatched");
 
             // Trade is queued — orders are still marked active until the batch settles
             const makerOrder = await fungibleOrderbook.getOrder(1n);
@@ -378,12 +526,15 @@ describe("FungibleOrderbook", function() {
     describe("revealTake()", function () {
 
         let makerOrderId: bigint;
+        let makerOrderAmount: bigint;
 
         beforeEach(async function () {
             // client1 places a SELL order
             makerOrderId = await placeOrder(
                 client1, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true
             );
+            const maker = await fungibleOrderbook.getOrder(makerOrderId);
+            makerOrderAmount = maker.amount;
         });
 
         it("should queue a take and update the status of the order right after it matches", async function () {
@@ -400,12 +551,12 @@ describe("FungibleOrderbook", function() {
         });
 
         it("should settle take and deactivate maker after batch window expires", async function () {
-            const takeHash = computeTakeHash(client2.address, makerOrderId, AMOUNT, SALT);
+            const takeHash = computeTakeHash(client2.address, makerOrderId, makerOrderAmount, SALT);
             const tx = await fungibleOrderbook.connect(client2).commit(takeHash, CommitType.Take);
             const receipt = await tx.wait();
             const commitId = receipt.logs[0].args[0];
 
-            await fungibleOrderbook.connect(client2).revealTake(commitId, makerOrderId, AMOUNT, SALT);
+            await fungibleOrderbook.connect(client2).revealTake(commitId, makerOrderId, makerOrderAmount, SALT);
 
             await advanceTime(SETTLEMENT_WINDOW + 1);
             await settlementEngine.settleBatch();
@@ -602,11 +753,18 @@ describe("FungibleOrderbook", function() {
                 client1, tokenB.target, tokenA.target, PRICE, AMOUNT, Side.SELL, true
             );
             const order = await fungibleOrderbook.getOrder(orderId);
+            const expectedAmount = normalizedAmountFromQuote(
+                tokenB.target,
+                tokenA.target,
+                Side.SELL,
+                PRICE,
+                AMOUNT
+            );
             expect(order.client).to.equal(client1.address);
             expect(order.tokenIn).to.equal(tokenB.target);
             expect(order.tokenOut).to.equal(tokenA.target);
             expect(order.price).to.equal(PRICE);
-            expect(order.amount).to.equal(AMOUNT);
+            expect(order.amount).to.equal(expectedAmount);
             expect(order.side).to.equal(Side.SELL);
             expect(order.status).to.equal(OrderStatus.Active);
             expect(order.partialAllowed).to.be.true;
@@ -635,9 +793,7 @@ describe("FungibleOrderbook", function() {
             const tx = await fungibleOrderbook.connect(client).commit(hash, CommitType.Order);
             const receipt = await tx.wait();
             const commitId = receipt.logs[0].args[0];
-            await fungibleOrderbook.connect(client).revealOrder(
-                commitId, tokenB.target, tokenA.target, price, amount, Side.SELL, partialAllowed, SALT
-            );
+            await revealOrder(client, commitId, tokenB.target, tokenA.target, price, amount, Side.SELL, partialAllowed, SALT);
             const events = await fungibleOrderbook.queryFilter(fungibleOrderbook.filters.OrderPlaced(), receipt.blockNumber);
             return events[events.length - 1].args.orderId;
         }
@@ -654,9 +810,7 @@ describe("FungibleOrderbook", function() {
             const tx = await fungibleOrderbook.connect(client).commit(hash, CommitType.Order);
             const receipt = await tx.wait();
             const commitId = receipt.logs[0].args[0];
-            await fungibleOrderbook.connect(client).revealOrder(
-                commitId, tokenA.target, tokenB.target, price, amount, Side.BUY, partialAllowed, SALT
-            );
+            await revealOrder(client, commitId, tokenA.target, tokenB.target, price, amount, Side.BUY, partialAllowed, SALT);
             const events = await fungibleOrderbook.queryFilter(fungibleOrderbook.filters.OrderPlaced(), receipt.blockNumber);
             return events[events.length - 1].args.orderId;
         }
@@ -682,9 +836,7 @@ describe("FungibleOrderbook", function() {
             const tx = await fungibleOrderbook.connect(client2).commit(hash, CommitType.Order);
             const receipt = await tx.wait();
             const commitId = receipt.logs[0].args[0];
-            await fungibleOrderbook.connect(client2).revealOrder(
-                commitId, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT
-            );
+            await revealOrder(client2, commitId, tokenA.target, tokenB.target, PRICE, AMOUNT, Side.BUY, true, SALT);
 
             await advanceTime(SETTLEMENT_WINDOW + 1);
             await expect(settlementEngine.settleBatch())
@@ -698,6 +850,21 @@ describe("FungibleOrderbook", function() {
                 makerAmount, takerAmount, PRICE, true, true
             );
 
+            const makerNormalized = normalizedAmountFromQuote(
+                tokenB.target,
+                tokenA.target,
+                Side.SELL,
+                PRICE,
+                makerAmount
+            );
+            const takerNormalized = normalizedAmountFromQuote(
+                tokenA.target,
+                tokenB.target,
+                Side.BUY,
+                PRICE,
+                takerAmount
+            );
+
             await advanceTime(SETTLEMENT_WINDOW + 1);
             await settlementEngine.settleBatch();
 
@@ -705,7 +872,7 @@ describe("FungibleOrderbook", function() {
             const takerOrder = await fungibleOrderbook.getOrder(takerOrderId);
             expect(takerOrder.status).to.equal(OrderStatus.Inactive);
             expect(makerOrder.status).to.equal(OrderStatus.Active);
-            expect(makerOrder.amount).to.equal(makerAmount - takerAmount);
+            expect(makerOrder.amount).to.equal(makerNormalized - takerNormalized);
         });
 
         it("should partially fill taker when maker amount is smaller, after batch settles", async function () {
@@ -713,6 +880,21 @@ describe("FungibleOrderbook", function() {
             const takerAmount = AMOUNT;
             const { makerOrderId, takerOrderId } = await setupAndMatch(
                 makerAmount, takerAmount, PRICE, true, true
+            );
+
+            const makerNormalized = normalizedAmountFromQuote(
+                tokenB.target,
+                tokenA.target,
+                Side.SELL,
+                PRICE,
+                makerAmount
+            );
+            const takerNormalized = normalizedAmountFromQuote(
+                tokenA.target,
+                tokenB.target,
+                Side.BUY,
+                PRICE,
+                takerAmount
             );
 
             await advanceTime(SETTLEMENT_WINDOW + 1);
@@ -723,7 +905,7 @@ describe("FungibleOrderbook", function() {
 
             expect(makerOrder.status).to.equal(OrderStatus.Inactive);
             expect(takerOrder.status).to.equal(OrderStatus.Active);
-            expect(takerOrder.amount).to.equal(takerAmount - makerAmount);
+            expect(takerOrder.amount).to.equal(takerNormalized - makerNormalized);
         });
 
         it("should revert if executeTrade is called by non-OrderBook", async function () {

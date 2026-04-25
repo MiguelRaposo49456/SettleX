@@ -26,7 +26,7 @@ interface IFungibleOrderbook {
         address tokenIn;        // Token the user is receiving
         address tokenOut;       // Token the user is giving
         uint256 price;          // Price expressed in tokenOut/tokenIn or the quote token for each base token like USDC per ETH
-        uint256 amount;         // Amount of tokenIn the user wants to buy
+        uint256 amount;         // Remaining normalized amount (token with smaller address)
         uint256 lockedAmount;   // Amount of tokenOut still reserved for this order
         uint256 block;          // Block number when the order was created
     }
@@ -39,8 +39,8 @@ interface IFungibleOrderbook {
         uint256 commitId,
         address tokenIn,
         address tokenOut,
-        uint256 price,
-        uint256 amount,
+        uint256 amountIn,
+        uint256 amountOut,
         uint8 side,
         bool partialAllowed,
         bytes32 salt

@@ -11,6 +11,8 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, ReentrancyGuard {
 
+    uint256 private constant PRICE_PRECISION = 1e18;
+
     ICustodian public custodian;
     IFungibleOrderbook public fungibleOrderbook;
     INFTOrderbook public nftOrderbook;
@@ -401,10 +403,13 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         assert(makerOrder.tokenIn == takerOrder.tokenOut);
         assert(makerOrder.tokenOut == takerOrder.tokenIn);
 
+        uint256 makerSendAmount = _tokenOutAmountForFill(makerOrder, executedAmount);
+        uint256 takerSendAmount = _tokenOutAmountForFill(takerOrder, executedAmount);
+
         if(makerOrder.status == IFungibleOrderbook.Status.Inactive) {
             if(takerOrder.status != IFungibleOrderbook.Status.Inactive) {
                 if(takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
-                else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+                else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.lockedAmount);
                 emit OrderInactive(makerOrderId);
                 return false;
             }
@@ -424,7 +429,7 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         if (!complianceManager.isTokenAllowed(makerOrder.tokenIn) || !complianceManager.isTokenAllowed(takerOrder.tokenIn)) {
             fungibleOrderbook.cancelOrder(makerOrderId);
             if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
-            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.lockedAmount);
             emit TokenBlacklisted();
             return false;
         }
@@ -433,14 +438,14 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         if (!complianceManager.isUserAllowed(makerOrder.client)) {
             fungibleOrderbook.cancelOrder(makerOrderId);
             if (takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
-            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.lockedAmount);
             emit UserBlacklisted(makerOrder.client);
             return false;
         }
 
         if (!complianceManager.isUserAllowed(takerOrder.client)) {
             if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
-            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.lockedAmount);
             fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
             emit UserBlacklisted(takerOrder.client);
             return false;
@@ -448,30 +453,30 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
 
         // Re-validate locked balances
         uint256 makerLocked = custodian.lockedBalanceOf(makerOrder.client, makerOrder.tokenOut);
-        if (makerLocked < executedAmount) {
+        if (makerLocked < makerSendAmount) {
             fungibleOrderbook.cancelOrder(makerOrderId);
             if (takerOrderId != 0) fungibleOrderbook.reinstateOrder(takerOrderId, executedAmount);
-            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.amount);
-            emit InsufficientLockedBalance(makerLocked, executedAmount);
+            else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerOrder.lockedAmount);
+            emit InsufficientLockedBalance(makerLocked, makerSendAmount);
             return false;
         }
 
         uint256 takerLocked = custodian.lockedBalanceOf(takerOrder.client, takerOrder.tokenOut);
-        if (takerLocked < executedAmount) {
+        if (takerLocked < takerSendAmount) {
             if (takerOrderId != 0) fungibleOrderbook.cancelOrder(takerOrderId);
             else custodian.unlockFunds(takerOrder.client, takerOrder.tokenOut, takerLocked);
             fungibleOrderbook.reinstateOrder(makerOrderId, executedAmount);
-            emit InsufficientLockedBalance(takerLocked, executedAmount);
+            emit InsufficientLockedBalance(takerLocked, takerSendAmount);
             return false;
         }
 
         // Execute both legs of the trade atomically
-        custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, executedAmount);
-        custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, executedAmount);
+        custodian.internalTransfer(makerOrder.client, takerOrder.client, makerOrder.tokenOut, makerSendAmount);
+        custodian.internalTransfer(takerOrder.client, makerOrder.client, takerOrder.tokenOut, takerSendAmount);
 
-        fungibleOrderbook.consumeLockedAmount(makerOrderId, executedAmount);
+        fungibleOrderbook.consumeLockedAmount(makerOrderId, makerSendAmount);
         if (takerOrderId != 0) {
-            fungibleOrderbook.consumeLockedAmount(takerOrderId, executedAmount);
+            fungibleOrderbook.consumeLockedAmount(takerOrderId, takerSendAmount);
         }
 
         bool makerHasFutureTrades = _hasFutureTradeForOrder(batchId, tradeIndex, makerOrderId);
@@ -503,6 +508,23 @@ contract SettlementEngine is ISettlementEngine, AutomationCompatibleInterface, R
         }
 
         return false;
+    }
+
+    function _tokenOutAmountForFill(
+        IFungibleOrderbook.Order memory order,
+        uint256 normalizedFill
+    ) internal pure returns (uint256) {
+        bool normalizedIsTokenIn = order.tokenIn < order.tokenOut;
+
+        if (!normalizedIsTokenIn) {
+            return normalizedFill;
+        }
+
+        if (order.side == 0) {
+            return (normalizedFill * order.price) / PRICE_PRECISION;
+        }
+
+        return (normalizedFill * PRICE_PRECISION) / order.price;
     }
 
     /**
