@@ -1,0 +1,53 @@
+import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
+
+export default buildModule("LocalDeployment", (m) => {
+  // 1. DEPLOY ASSET MOCKS
+  const mockWeth = m.contract("MockERC20", ["Mock WETH", "mWETH", 18], { id: "MockWETH" });
+  const tokenA = m.contract("MockERC20", ["Token A", "TKNA", 18], { id: "TokenA" });
+  const tokenB = m.contract("MockERC20", ["Token B", "TKNB", 18], { id: "TokenB" });
+  const mockNFT = m.contract("MockERC721", ["Big NFT", "BNFT"], { id: "BigNFT" });
+
+  // 2. DEPLOY INFRASTRUCTURE
+  const lendingPool = m.contract("MockLendingPool");
+  const compliance = m.contract("ComplianceManager");
+
+  // 3. DEPLOY ORDERBOOKS
+  const fungibleOrderbook = m.contract("FungibleOrderbook", [compliance]);
+  const nftOrderbook = m.contract("NFTOrderbook", [compliance]);
+
+  // 4. DEPLOY SETTLEMENT ENGINE
+  const settlementEngine = m.contract("SettlementEngine", [compliance, 60, 50]);
+
+  // 5. DEPLOY CUSTODIAN
+  const custodian = m.contract("Custodian", [compliance, lendingPool, mockWeth]);
+
+  // 6. SETUP: Register Token Pools in the LendingPool
+  const wethPool = m.call(lendingPool, "addPool", [mockWeth, 500, "WETH", "WETH"], { id: "AddWethPool" });
+  const tokenAPool = m.call(lendingPool, "addPool", [tokenA, 300, "Token A", "TKNA"], { id: "AddTokenAPool" });
+
+  // 7. INITIALIZATION (Wiring circular dependencies)
+  m.call(custodian, "initialize", [fungibleOrderbook, nftOrderbook, settlementEngine], { after: [wethPool] });
+  m.call(fungibleOrderbook, "initialize", [custodian, settlementEngine]);
+  m.call(nftOrderbook, "initialize", [custodian, settlementEngine]);
+  m.call(settlementEngine, "initialize", [fungibleOrderbook, nftOrderbook, custodian]);
+
+  // 8. AUTOMATED LIQUIDITY: Pre-funding the LendingPool
+  const liquidityAmount = BigInt(10000) * BigInt(10**18); // 10,000 tokens for liquidity
+
+  // Mint tokens to the deployer account (m.getAccount(0))
+  const mintWeth = m.call(mockWeth, "mint", [m.getAccount(0), liquidityAmount], { id: "MintWeth" });
+  const mintA = m.call(tokenA, "mint", [m.getAccount(0), liquidityAmount], { id: "MintA" });
+
+  // Approve the LendingPool to take the tokens
+  const approveWeth = m.call(mockWeth, "approve", [lendingPool, liquidityAmount], { id: "ApproveWeth", after: [mintWeth] });
+  const approveA = m.call(tokenA, "approve", [lendingPool, liquidityAmount], { id: "ApproveA", after: [mintA] });
+
+  // Inject funds into the pool to cover future yield and withdrawals
+  m.call(lendingPool, "addLiquidity", [mockWeth, liquidityAmount], { id: "AddWethLiquidity", after: [approveWeth, wethPool] });
+  m.call(lendingPool, "addLiquidity", [tokenA, liquidityAmount], { id: "AddTokenALiquidity", after: [approveA, tokenAPool] });
+
+  return { 
+    compliance, lendingPool, custodian, fungibleOrderbook, nftOrderbook, 
+    settlementEngine, mockWeth, tokenA, tokenB, mockNFT 
+  };
+});
