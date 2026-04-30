@@ -20,8 +20,8 @@ export const FUNGIBLE_ORDERBOOK_CONTRACT = {
   abi: FungibleOrderbookABI.abi,
 } as const;
 
-export const NONFUNGIBLE_ORDERBOOK_CONTRACT = {
-  address: import.meta.env.VITE_NONFUNGIBLE_ORDERBOOK_ADDRESS as `0x${string}`,
+export const NFT_ORDERBOOK_CONTRACT = {
+  address: import.meta.env.VITE_NFT_ORDERBOOK_ADDRESS as `0x${string}`,
   abi: NonFungibleOrderbookABI.abi,
 } as const;
 

@@ -1,11 +1,20 @@
-import { http, createConfig } from 'wagmi'
-import { sepolia, hardhat } from 'wagmi/chains'
+// frontend/src/wagmi.ts
+import { http, createConfig } from 'wagmi';
+import { sepolia, hardhat } from 'wagmi/chains';
+import { getDefaultConfig } from '@rainbow-me/rainbowkit';
 
-export const config = createConfig({
-  chains: [sepolia, hardhat],
+const projectId = import.meta.env.VITE_PROJECT_ID;
+
+if (!projectId) {
+  throw new Error("Project ID is undefined. Please check your .env file.");
+}
+
+export const config = getDefaultConfig({
+  appName: 'Batch Auction Thesis',
+  projectId: projectId,
+  chains: [hardhat, sepolia],
   transports: {
-    // This allows you to switch between local and testnet without changing code
+    [hardhat.id]: http('http://127.0.0.1:8545'),
     [sepolia.id]: http(import.meta.env.VITE_SEPOLIA_RPC_URL),
-    [hardhat.id]: http(), 
   },
-})
+});
