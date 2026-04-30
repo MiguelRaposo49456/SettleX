@@ -1,4 +1,4 @@
-import { useBlockNumber, useWriteContract, useWatchBlocks } from 'wagmi';
+import { useBlockNumber, useWriteContract } from 'wagmi';
 import { useState, useEffect } from 'react';
 import { keccak256, encodePacked } from 'viem';
 import FungibleOrderbookABI from '../abis/FungibleOrderbook.json';
@@ -23,7 +23,7 @@ export function useAutoOrder() {
     ));
 
     // Phase 1: Commit
-    const hash = await writeContractAsync({
+    await writeContractAsync({
       address: import.meta.env.VITE_FUNGIBLE_ORDERBOOK_ADDRESS,
       abi: FungibleOrderbookABI.abi,
       functionName: 'commit',

@@ -1,5 +1,5 @@
 // frontend/src/wagmi.ts
-import { http, createConfig } from 'wagmi';
+import { http } from 'wagmi';
 import { sepolia, hardhat } from 'wagmi/chains';
 import { getDefaultConfig } from '@rainbow-me/rainbowkit';
 

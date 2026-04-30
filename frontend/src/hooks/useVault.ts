@@ -1,10 +1,10 @@
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { parseEther, formatEther } from 'viem';
 import CustodianABI from '../abis/Custodian.json';
-import LendingPoolABI from '../abis/MockLendingPool.json';
+
 
 const CUSTODIAN_ADDR = import.meta.env.VITE_CUSTODIAN_ADDRESS;
-const LENDING_POOL_ADDR = import.meta.env.VITE_LENDING_POOL_ADDRESS;
+
 const ETH_ADR = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
 export function useVault() {
