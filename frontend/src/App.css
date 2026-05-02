@@ -140,6 +140,129 @@
   padding: 20px;
 }
 
+.content {
+  display: grid;
+  gap: 16px;
+}
+
+.dashboard {
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+
+.dashboard h2 {
+  margin: 0;
+}
+
+.cm-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.cm-header h2 {
+  margin: 0 0 8px;
+}
+
+.cm-header p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.cm-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.cm-status-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-soft);
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.cm-status-card span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.cm-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cm-actions-row button {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-soft);
+  padding: 10px 14px;
+}
+
+.cm-actions-row button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cm-block {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background: #fff;
+  display: grid;
+  gap: 10px;
+}
+
+.cm-block h3 {
+  margin: 0;
+}
+
+.cm-block label {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.cm-block input,
+.cm-block select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--panel);
+}
+
+.cm-hint {
+  margin: 0;
+  color: var(--muted);
+}
+
+.cm-feedback {
+  margin: 0;
+  font-weight: 600;
+}
+
+.cm-tx-box {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-soft);
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.cm-tx-hash {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 960px) {
   .topbar,
   .section-summary {

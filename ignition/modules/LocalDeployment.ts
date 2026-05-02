@@ -2,7 +2,7 @@ import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
 
 export default buildModule("LocalDeployment", (m) => {
   // 1. DEPLOY ASSET MOCKS
-  const mockWeth = m.contract("MockERC20", ["Mock WETH", "mWETH", 18], { id: "MockWETH" });
+  const mockWeth = m.contract("MockWETH", [], { id: "MockWETH" });
   const tokenA = m.contract("MockERC20", ["Token A", "TKNA", 18], { id: "TokenA" });
   const tokenB = m.contract("MockERC20", ["Token B", "TKNB", 18], { id: "TokenB" });
   const mockNFT = m.contract("MockERC721", ["Big NFT", "BNFT"], { id: "BigNFT" });
@@ -32,14 +32,16 @@ export default buildModule("LocalDeployment", (m) => {
   m.call(settlementEngine, "initialize", [fungibleOrderbook, nftOrderbook, custodian]);
 
   // 8. AUTOMATED LIQUIDITY: Pre-funding the LendingPool
-  const liquidityAmount = BigInt(10000) * BigInt(10**18); // 10,000 tokens for liquidity
+  // Use a smaller deposit so the deployer account can afford the upfront ETH cost
+  const liquidityAmount = BigInt(1000) * BigInt(10**18); // 1,000 tokens for liquidity
 
-  // Mint tokens to the deployer account (m.getAccount(0))
-  const mintWeth = m.call(mockWeth, "mint", [m.getAccount(0), liquidityAmount], { id: "MintWeth" });
+  // Fund WETH by depositing ETH into MockWETH from the deployer account
+  // MockWETH.deposit() is payable and m.call supports sending value and specifying the sender
+  const depositWeth = m.call(mockWeth, "deposit", [], { id: "DepositWeth", value: liquidityAmount, from: m.getAccount(0) });
   const mintA = m.call(tokenA, "mint", [m.getAccount(0), liquidityAmount], { id: "MintA" });
 
   // Approve the LendingPool to take the tokens
-  const approveWeth = m.call(mockWeth, "approve", [lendingPool, liquidityAmount], { id: "ApproveWeth", after: [mintWeth] });
+  const approveWeth = m.call(mockWeth, "approve", [lendingPool, liquidityAmount], { id: "ApproveWeth", after: [depositWeth] });
   const approveA = m.call(tokenA, "approve", [lendingPool, liquidityAmount], { id: "ApproveA", after: [mintA] });
 
   // Inject funds into the pool to cover future yield and withdrawals
