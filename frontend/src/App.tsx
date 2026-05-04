@@ -1,10 +1,20 @@
-﻿import { useAccount } from 'wagmi';
+﻿import { useState } from 'react';
+import { useAccount } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import ComplianceManagerView from './views/ComplianceManagerView';
+import CustodianView from './views/CustodianView';
 import './App.css';
+
+type ViewId = 'compliance' | 'custodian';
+
+const VIEWS: Array<{ id: ViewId; label: string }> = [
+  { id: 'compliance', label: 'Compliance Manager' },
+  { id: 'custodian', label: 'Custodian' },
+];
 
 function App() {
   const { address, isConnected } = useAccount();
+  const [activeView, setActiveView] = useState<ViewId>('compliance');
 
   return (
     <div className="app-shell">
@@ -28,7 +38,19 @@ function App() {
           <section className="dashboard">
             <h2>Dashboard</h2>
             <p>Connected address: <code>{address}</code></p>
-            <ComplianceManagerView />
+            <nav className="section-tabs" aria-label="Contract views">
+              {VIEWS.map((view) => (
+                <button
+                  key={view.id}
+                  className={activeView === view.id ? 'active' : ''}
+                  onClick={() => setActiveView(view.id)}
+                >
+                  {view.label}
+                </button>
+              ))}
+            </nav>
+
+            {activeView === 'compliance' ? <ComplianceManagerView /> : <CustodianView />}
           </section>
         )}
       </main>

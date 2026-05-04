@@ -111,6 +111,10 @@
   cursor: pointer;
 }
 
+.section-tabs button:hover {
+  border-color: var(--accent);
+}
+
 .section-tabs button.active {
   border-color: var(--accent);
   background: rgba(20, 104, 95, 0.12);
@@ -204,6 +208,10 @@
   border-radius: 10px;
   background: var(--panel-soft);
   padding: 10px 14px;
+}
+
+.cm-actions-row button:hover {
+  border-color: var(--accent);
 }
 
 .cm-actions-row button:disabled {
