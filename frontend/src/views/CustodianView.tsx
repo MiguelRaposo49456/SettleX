@@ -33,14 +33,32 @@ function CustodianView() {
   const [nftBusy, setNftBusy] = useState(false);
   const [nftFeedback, setNftFeedback] = useState('');
   const [customNftAddr, setCustomNftAddr] = useState('');
+  const [withdrawEthAmount, setWithdrawEthAmount] = useState('');
+  const [withdrawEthBusy, setWithdrawEthBusy] = useState(false);
+  const [withdrawEthFeedback, setWithdrawEthFeedback] = useState('');
+  const [withdrawTokenAmount, setWithdrawTokenAmount] = useState('');
+  const [withdrawTokenBusy, setWithdrawTokenBusy] = useState(false);
+  const [withdrawTokenFeedback, setWithdrawTokenFeedback] = useState('');
+  const [withdrawNftBusy, setWithdrawNftBusy] = useState(false);
+  const [withdrawNftFeedback, setWithdrawNftFeedback] = useState('');
+
+  const parsedNftTokenId = useMemo(() => {
+    try {
+      return nftTokenId ? BigInt(nftTokenId) : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [nftTokenId]);
 
   // read whether this NFT (client, collection, tokenId) is held by the custodian
   const { data: nftBalanceRaw, refetch: refetchNftBalance } = useReadContract({
     ...CUSTODIAN_CONTRACT,
     functionName: 'nftBalanceOf',
-    args: address && selectedNftCollection && nftTokenId ? [address as `0x${string}`, selectedNftCollection.address, BigInt(nftTokenId)] : undefined,
-    query: { enabled: !!address && !!selectedNftCollection && !!nftTokenId },
+    args: address && selectedNftCollection && parsedNftTokenId !== undefined ? [address as `0x${string}`, selectedNftCollection.address, parsedNftTokenId] : undefined,
+    query: { enabled: !!address && !!selectedNftCollection && parsedNftTokenId !== undefined },
   });
+
+  const nftHeld = Boolean((nftBalanceRaw as readonly [boolean, boolean] | undefined)?.[0]);
 
   const wethAddress = (import.meta.env.VITE_WETH_ADDRESS as `0x${string}` | undefined) ?? (ZERO_ADDRESS as `0x${string}`);
 
@@ -79,6 +97,52 @@ function CustodianView() {
   });
 
   const depositedEth = depositedRaw ? formatEther(depositedRaw as bigint) : '0';
+
+  const withdrawEth = async () => {
+    if (!withdrawEthAmount) {
+      setWithdrawEthFeedback('Enter an ETH amount first.');
+      return;
+    }
+
+    let parsedAmount: bigint;
+    try {
+      parsedAmount = parseEther(withdrawEthAmount);
+    } catch {
+      setWithdrawEthFeedback('Enter a valid ETH amount.');
+      return;
+    }
+
+    try {
+      setWithdrawEthBusy(true);
+      setWithdrawEthFeedback('');
+
+      const txHash = balanceTokenAddress === (ETH_SENTINEL as `0x${string}`)
+        ? await writeContractAsync({
+            ...CUSTODIAN_CONTRACT,
+            functionName: 'withdrawETH',
+            args: [parsedAmount],
+          })
+        : await writeContractAsync({
+            ...CUSTODIAN_CONTRACT,
+            functionName: 'withdraw',
+            args: [balanceTokenAddress, parsedAmount, true],
+          });
+
+      if (publicClient) {
+        await publicClient.waitForTransactionReceipt({ hash: txHash });
+      }
+
+      setWithdrawEthAmount('');
+      await refetchAToken();
+      await refetchDeposited();
+      setWithdrawEthFeedback('ETH withdrawn successfully.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ETH withdraw failed';
+      setWithdrawEthFeedback(message);
+    } finally {
+      setWithdrawEthBusy(false);
+    }
+  };
 
   const depositEth = async () => {
     if (!ethAmount) {
@@ -131,6 +195,50 @@ function CustodianView() {
   });
 
   const depositedToken = depositedTokenRaw && selectedToken ? formatUnits(depositedTokenRaw as bigint, selectedToken.decimals) : '0';
+
+  const withdrawErc20 = async () => {
+    if (!selectedToken) {
+      setWithdrawTokenFeedback('Select a token first');
+      return;
+    }
+    if (!withdrawTokenAmount) {
+      setWithdrawTokenFeedback('Enter token amount');
+      return;
+    }
+
+    let parsedAmount: bigint;
+    try {
+      parsedAmount = parseUnits(withdrawTokenAmount, selectedToken.decimals);
+    } catch {
+      setWithdrawTokenFeedback('Enter a valid token amount');
+      return;
+    }
+
+    try {
+      setWithdrawTokenBusy(true);
+      setWithdrawTokenFeedback('');
+
+      const txHash = await writeContractAsync({
+        ...CUSTODIAN_CONTRACT,
+        functionName: 'withdraw',
+        args: [selectedBalanceKey ?? selectedToken.address, parsedAmount, false],
+      });
+
+      if (publicClient) {
+        await publicClient.waitForTransactionReceipt({ hash: txHash });
+      }
+
+      setWithdrawTokenAmount('');
+      await refetchATokenForSelected();
+      await refetchDepositedToken();
+      setWithdrawTokenFeedback('Token withdrawn successfully.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Token withdraw failed';
+      setWithdrawTokenFeedback(message);
+    } finally {
+      setWithdrawTokenBusy(false);
+    }
+  };
 
   const depositErc20 = async () => {
     if (!selectedToken) {
@@ -314,6 +422,41 @@ function CustodianView() {
       setNftBusy(false);
     }
   };
+
+  const withdrawNft = async () => {
+    if (!selectedNftCollection) {
+      setWithdrawNftFeedback('Select an NFT collection first');
+      return;
+    }
+
+    if (parsedNftTokenId === undefined) {
+      setWithdrawNftFeedback('Enter a valid token ID');
+      return;
+    }
+
+    try {
+      setWithdrawNftBusy(true);
+      setWithdrawNftFeedback('');
+
+      const txHash = await writeContractAsync({
+        ...CUSTODIAN_CONTRACT,
+        functionName: 'withdrawNFT',
+        args: [selectedNftCollection.address, parsedNftTokenId],
+      });
+
+      if (publicClient) {
+        await publicClient.waitForTransactionReceipt({ hash: txHash });
+      }
+
+      await refetchNftBalance?.();
+      setWithdrawNftFeedback('NFT withdrawn successfully.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'NFT withdraw failed';
+      setWithdrawNftFeedback(message);
+    } finally {
+      setWithdrawNftBusy(false);
+    }
+  };
   
 
   const submitCustomNft = async () => {
@@ -361,14 +504,10 @@ function CustodianView() {
             <strong>{depositedToken} {selectedToken.symbol}</strong>
           </div>
         ) : null}
-          {selectedNftCollection && nftTokenId ? (
+          {selectedNftCollection && parsedNftTokenId !== undefined ? (
             <div className="cm-status-card">
               <span>NFT deposited?</span>
-              <strong>{(() => {
-                if (!nftBalanceRaw) return 'No';
-                const held = (nftBalanceRaw as any).held ?? (nftBalanceRaw as any)[0];
-                return held ? 'Yes' : 'No';
-              })()}</strong>
+              <strong>{nftHeld ? 'Yes' : 'No'}</strong>
             </div>
           ) : null}
       </div>
@@ -389,6 +528,24 @@ function CustodianView() {
         </div>
         {!(isInitialized as boolean) && <p className="cm-feedback" style={{ color: 'orange' }}>Custodian not initialized</p>}
         {(isInitialized as boolean) && !(userAllowed as boolean) && <p className="cm-feedback" style={{ color: 'orange' }}>Your account is not allowed to deposit</p>}
+      </div>
+
+      <div className="cm-block">
+        <h3>Withdraw ETH</h3>
+        <label htmlFor="withdraw-eth-amount">Amount</label>
+        <input
+          id="withdraw-eth-amount"
+          placeholder="0.1"
+          value={withdrawEthAmount}
+          onChange={(event) => setWithdrawEthAmount(event.target.value.trim())}
+        />
+        <div className="cm-actions-row">
+          <button onClick={withdrawEth} disabled={withdrawEthBusy || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || Number(depositedEth) <= 0}>
+            Withdraw ETH
+          </button>
+        </div>
+        <p className="cm-feedback">Available: {depositedEth} ETH</p>
+        {withdrawEthFeedback ? <p className="cm-feedback">{withdrawEthFeedback}</p> : null}
       </div>
 
       <div className="cm-block">
@@ -438,6 +595,43 @@ function CustodianView() {
       </div>
 
       <div className="cm-block">
+        <h3>Withdraw ERC20</h3>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div>
+            <label>Token</label>
+            <div>
+              {selectedToken ? (
+                <div>
+                  <strong>{selectedToken.name} ({selectedToken.symbol})</strong>
+                  <button onClick={() => setSelectedToken(null)}>Change</button>
+                </div>
+              ) : (
+                <button onClick={() => setShowPicker(true)}>Pick token</button>
+              )}
+            </div>
+            {selectedToken ? (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ padding: 8, borderRadius: 6, background: '#f6f8fa' }}>
+                  <strong>Available:</strong> {depositedToken} {selectedToken.symbol}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div>
+            <label>Amount</label>
+            <input value={withdrawTokenAmount} onChange={(e) => setWithdrawTokenAmount(e.target.value.trim())} placeholder="100" />
+          </div>
+        </div>
+        <div className="cm-actions-row">
+          <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || depositedToken === '0'}>
+            Withdraw ERC20
+          </button>
+        </div>
+        {withdrawTokenFeedback ? <p className="cm-feedback">{withdrawTokenFeedback}</p> : null}
+      </div>
+
+      <div className="cm-block">
         <h3>Deposit NFT</h3>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
@@ -472,6 +666,36 @@ function CustodianView() {
           </button>
         </div>
         {nftFeedback ? <p className="cm-feedback">{nftFeedback}</p> : null}
+      </div>
+
+      <div className="cm-block">
+        <h3>Withdraw NFT</h3>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <label>Collection</label>
+            <div>
+              {selectedNftCollection ? (
+                <div>
+                  <strong>{selectedNftCollection.name} ({selectedNftCollection.symbol})</strong>
+                  <button onClick={() => setSelectedNftCollection(null)}>Change</button>
+                </div>
+              ) : (
+                <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label>Token ID</label>
+            <input value={nftTokenId} onChange={(event) => setNftTokenId(event.target.value.trim())} placeholder="1" />
+          </div>
+        </div>
+        <div className="cm-actions-row">
+          <button onClick={withdrawNft} disabled={withdrawNftBusy || !address || !selectedNftCollection || parsedNftTokenId === undefined || !(isInitialized as boolean) || !(userAllowed as boolean) || !nftHeld}>
+            Withdraw NFT
+          </button>
+        </div>
+        {withdrawNftFeedback ? <p className="cm-feedback">{withdrawNftFeedback}</p> : null}
       </div>
 
       {showPicker ? <TokenPicker onSelect={handleTokenSelect} onClose={() => setShowPicker(false)} /> : null}
