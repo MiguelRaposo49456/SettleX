@@ -1,11 +1,15 @@
 import { useState } from 'react';
 import { useMemo } from 'react';
+import { decodeEventLog } from 'viem';
 import { parseEther, formatEther, parseUnits, formatUnits } from 'viem';
 import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi';
 import { CUSTODIAN_CONTRACT, LENDING_POOL_CONTRACT, COMPLIANCE_MANAGER_CONTRACT } from '../constants/contracts';
 import TokenPicker from '../components/TokenPicker';
+import NFTCollectionPicker from '../components/NFTCollectionPicker';
 import validateTokenOnchain from '../hooks/useTokenValidation';
+import validateNftCollectionOnchain from '../hooks/useNftValidation';
 import type { TokenMetadata } from '../hooks/useTokenValidation';
+import type { NFTCollectionMetadata } from '../hooks/useNftValidation';
 
 const ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -23,6 +27,20 @@ function CustodianView() {
   const [tokenBusy, setTokenBusy] = useState(false);
   const [tokenFeedback, setTokenFeedback] = useState('');
   const [customAddr, setCustomAddr] = useState('');
+  const [showNftPicker, setShowNftPicker] = useState(false);
+  const [selectedNftCollection, setSelectedNftCollection] = useState<NFTCollectionMetadata | null>(null);
+  const [nftTokenId, setNftTokenId] = useState('');
+  const [nftBusy, setNftBusy] = useState(false);
+  const [nftFeedback, setNftFeedback] = useState('');
+  const [customNftAddr, setCustomNftAddr] = useState('');
+
+  // read whether this NFT (client, collection, tokenId) is held by the custodian
+  const { data: nftBalanceRaw, refetch: refetchNftBalance } = useReadContract({
+    ...CUSTODIAN_CONTRACT,
+    functionName: 'nftBalanceOf',
+    args: address && selectedNftCollection && nftTokenId ? [address as `0x${string}`, selectedNftCollection.address, BigInt(nftTokenId)] : undefined,
+    query: { enabled: !!address && !!selectedNftCollection && !!nftTokenId },
+  });
 
   const wethAddress = (import.meta.env.VITE_WETH_ADDRESS as `0x${string}` | undefined) ?? (ZERO_ADDRESS as `0x${string}`);
 
@@ -194,6 +212,131 @@ function CustodianView() {
   const handleTokenSelect = (token: TokenMetadata) => {
     setSelectedToken(token);
     setShowPicker(false);
+    // Refresh aToken lookup and deposited balance immediately for visual feedback
+    try {
+      refetchATokenForSelected?.();
+    } catch {
+      // ignore
+    }
+    try {
+      refetchDepositedToken?.();
+    } catch {
+      // ignore
+    }
+  };
+
+  const depositNft = async () => {
+    if (!selectedNftCollection) {
+      setNftFeedback('Select an NFT collection first');
+      return;
+    }
+
+    if (!nftTokenId) {
+      setNftFeedback('Enter a token ID');
+      return;
+    }
+
+    let parsedTokenId: bigint;
+    try {
+      parsedTokenId = BigInt(nftTokenId);
+    } catch {
+      setNftFeedback('Token ID must be an integer');
+      return;
+    }
+
+    try {
+      setNftBusy(true);
+      setNftFeedback('');
+
+      setNftFeedback(`Approving ${selectedNftCollection.symbol}...`);
+      const approvalHash = await writeContractAsync({
+        address: selectedNftCollection.address,
+        abi: [
+          {
+            name: 'setApprovalForAll',
+            type: 'function',
+            stateMutability: 'nonpayable',
+            inputs: [
+              { name: 'operator', type: 'address' },
+              { name: 'approved', type: 'bool' },
+            ],
+            outputs: [],
+          },
+        ],
+        functionName: 'setApprovalForAll',
+        args: [CUSTODIAN_CONTRACT.address, true],
+      });
+      if (publicClient) await publicClient.waitForTransactionReceipt({ hash: approvalHash });
+
+      setNftFeedback(`Depositing NFT #${nftTokenId}...`);
+      const txHash = await writeContractAsync({
+        ...CUSTODIAN_CONTRACT,
+        functionName: 'depositNFT',
+        args: [selectedNftCollection.address, parsedTokenId],
+      });
+
+      let successMessage = `NFT #${nftTokenId} deposited successfully.`;
+      if (publicClient) {
+        const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+        for (const log of receipt.logs) {
+          try {
+            const event = decodeEventLog({
+              abi: CUSTODIAN_CONTRACT.abi,
+              data: log.data,
+              topics: log.topics,
+            });
+            if (event.eventName !== 'NFTDeposited') continue;
+
+            const args = event.args as { client?: `0x${string}`; collection?: `0x${string}`; tokenId?: bigint };
+            if (args.client?.toLowerCase() !== address?.toLowerCase()) continue;
+            if (args.collection?.toLowerCase() !== selectedNftCollection.address.toLowerCase()) continue;
+            if (args.tokenId === parsedTokenId) {
+              successMessage = `Deposited NFT #${args.tokenId.toString()} from ${selectedNftCollection.name} successfully.`;
+              break;
+            }
+          } catch {
+            // Ignore unrelated logs.
+          }
+        }
+      }
+
+      setNftTokenId('');
+      setNftFeedback(successMessage);
+      try {
+        await refetchNftBalance?.();
+      } catch {
+        // ignore
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'NFT deposit failed';
+      setNftFeedback(message);
+    } finally {
+      setNftBusy(false);
+    }
+  };
+  
+
+  const submitCustomNft = async () => {
+    if (!customNftAddr) {
+      setNftFeedback('Enter an NFT collection address');
+      return;
+    }
+    try {
+      setNftBusy(true);
+      setNftFeedback('');
+      const meta = await validateNftCollectionOnchain(publicClient, customNftAddr as `0x${string}`);
+      setSelectedNftCollection(meta);
+      setNftFeedback('NFT collection validated and selected');
+    } catch (err: any) {
+      setNftFeedback(err?.message ?? 'Validation failed');
+    } finally {
+      setNftBusy(false);
+    }
+  };
+
+  const handleNftCollectionSelect = (collection: NFTCollectionMetadata) => {
+    setSelectedNftCollection(collection);
+    setShowNftPicker(false);
   };
 
   return (
@@ -218,6 +361,16 @@ function CustodianView() {
             <strong>{depositedToken} {selectedToken.symbol}</strong>
           </div>
         ) : null}
+          {selectedNftCollection && nftTokenId ? (
+            <div className="cm-status-card">
+              <span>NFT deposited?</span>
+              <strong>{(() => {
+                if (!nftBalanceRaw) return 'No';
+                const held = (nftBalanceRaw as any).held ?? (nftBalanceRaw as any)[0];
+                return held ? 'Yes' : 'No';
+              })()}</strong>
+            </div>
+          ) : null}
       </div>
 
       <div className="cm-block">
@@ -253,6 +406,13 @@ function CustodianView() {
                 <button onClick={() => setShowPicker(true)}>Pick token</button>
               )}
             </div>
+            {selectedToken ? (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ padding: 8, borderRadius: 6, background: '#f6f8fa' }}>
+                  <strong>Deposited:</strong> {depositedToken} {selectedToken.symbol}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div>
@@ -277,7 +437,45 @@ function CustodianView() {
         {tokenFeedback ? <p className="cm-feedback">{tokenFeedback}</p> : null}
       </div>
 
+      <div className="cm-block">
+        <h3>Deposit NFT</h3>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <label>Collection</label>
+            <div>
+              {selectedNftCollection ? (
+                <div>
+                  <strong>{selectedNftCollection.name} ({selectedNftCollection.symbol})</strong>
+                  <button onClick={() => setSelectedNftCollection(null)}>Change</button>
+                </div>
+              ) : (
+                <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label>Token ID</label>
+            <input value={nftTokenId} onChange={(event) => setNftTokenId(event.target.value.trim())} placeholder="1" />
+          </div>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <label>Custom NFT collection address</label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <input placeholder="0x..." value={customNftAddr} onChange={(event) => setCustomNftAddr(event.target.value.trim())} style={{ flex: 1 }} />
+            <button onClick={submitCustomNft} disabled={nftBusy || !customNftAddr}>Validate & Use</button>
+          </div>
+        </div>
+        <div className="cm-actions-row">
+          <button onClick={depositNft} disabled={nftBusy || !address || !selectedNftCollection || !nftTokenId || !(isInitialized as boolean) || !(userAllowed as boolean)}>
+            Approve & Deposit NFT
+          </button>
+        </div>
+        {nftFeedback ? <p className="cm-feedback">{nftFeedback}</p> : null}
+      </div>
+
       {showPicker ? <TokenPicker onSelect={handleTokenSelect} onClose={() => setShowPicker(false)} /> : null}
+      {showNftPicker ? <NFTCollectionPicker onSelect={handleNftCollectionSelect} onClose={() => setShowNftPicker(false)} /> : null}
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
     </section>

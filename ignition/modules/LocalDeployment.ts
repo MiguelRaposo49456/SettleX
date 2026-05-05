@@ -45,6 +45,10 @@ export default buildModule("LocalDeployment", (m) => {
   m.call(tokenA, "mint", [m.getAccount(1), traderAmount], { id: "MintATrader1", after: [mintA] });
   m.call(tokenB, "mint", [m.getAccount(1), traderAmount], { id: "MintBTrader0" });
 
+  // Mint NFTs to test account
+  m.call(mockNFT, "mint", [m.getAccount(1), BigInt(1)], { id: "MintNFT1" });
+  m.call(mockNFT, "mint", [m.getAccount(1), BigInt(2)], { id: "MintNFT2" });
+
   // Approve the LendingPool to take the tokens
   const approveWeth = m.call(mockWeth, "approve", [lendingPool, liquidityAmount], { id: "ApproveWeth", after: [depositWeth] });
   const approveA = m.call(tokenA, "approve", [lendingPool, liquidityAmount], { id: "ApproveA", after: [mintA] });
@@ -55,6 +59,6 @@ export default buildModule("LocalDeployment", (m) => {
 
   return { 
     compliance, lendingPool, custodian, fungibleOrderbook, nftOrderbook, 
-    settlementEngine, mockWeth, tokenA, tokenB, mockNFT 
+    settlementEngine, mockWeth, tokenA, tokenB, mockNFT
   };
 });
