@@ -14,6 +14,11 @@ import type { NFTCollectionMetadata } from '../hooks/useNftValidation';
 const ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+function showContractError(error: unknown, fallbackMessage: string, presentError: (message: string) => void) {
+  const message = error instanceof Error ? error.message : fallbackMessage;
+  presentError(message);
+}
+
 function CustodianView() {
   const { address } = useAccount();
   const { writeContractAsync } = useWriteContract();
@@ -43,6 +48,20 @@ function CustodianView() {
   const [withdrawTokenFeedback, setWithdrawTokenFeedback] = useState('');
   const [withdrawNftBusy, setWithdrawNftBusy] = useState(false);
   const [withdrawNftFeedback, setWithdrawNftFeedback] = useState('');
+  const [errorModalMessage, setErrorModalMessage] = useState('');
+  const [showErrorModal, setShowErrorModal] = useState(false);
+
+  void feedback;
+  void tokenFeedback;
+  void nftFeedback;
+  void withdrawEthFeedback;
+  void withdrawTokenFeedback;
+  void withdrawNftFeedback;
+
+  const presentError = (message: string) => {
+    setErrorModalMessage(message);
+    setShowErrorModal(true);
+  };
 
   const parsedNftTokenId = useMemo(() => {
     try {
@@ -100,6 +119,25 @@ function CustodianView() {
 
   const depositedEth = depositedRaw ? formatEther(depositedRaw as bigint) : '0';
   const hasDepositedEth = Boolean(depositedRaw && (depositedRaw as bigint) > 0n);
+  const canDepositEth = useMemo(() => {
+    const trimmed = ethAmount.trim();
+    if (!trimmed) return false;
+    try {
+      return parseEther(trimmed) > 0n;
+    } catch {
+      return false;
+    }
+  }, [ethAmount]);
+  const canWithdrawEth = useMemo(() => {
+    if (withdrawAllEth) return hasDepositedEth;
+    const trimmed = withdrawEthAmount.trim();
+    if (!trimmed) return false;
+    try {
+      return parseEther(trimmed) > 0n;
+    } catch {
+      return false;
+    }
+  }, [hasDepositedEth, withdrawAllEth, withdrawEthAmount]);
 
   const withdrawEth = async () => {
     if (!withdrawAllEth && !withdrawEthAmount) {
@@ -122,7 +160,6 @@ function CustodianView() {
 
     try {
       setWithdrawEthBusy(true);
-      setWithdrawEthFeedback('');
 
       const txHash = balanceTokenAddress === (ETH_SENTINEL as `0x${string}`)
         ? await writeContractAsync({
@@ -143,24 +180,21 @@ function CustodianView() {
       setWithdrawEthAmount('');
       await refetchAToken();
       await refetchDeposited();
-      setWithdrawEthFeedback('ETH withdrawn successfully.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'ETH withdraw failed';
-      setWithdrawEthFeedback(message);
+      showContractError(error, 'ETH withdraw failed', presentError);
     } finally {
       setWithdrawEthBusy(false);
     }
   };
 
   const depositEth = async () => {
-    if (!ethAmount) {
+    if (!canDepositEth) {
       setFeedback('Enter an ETH amount first.');
       return;
     }
 
     try {
       setBusyAction(true);
-      setFeedback('');
       const txHash = await writeContractAsync({
         ...CUSTODIAN_CONTRACT,
         functionName: 'depositETH',
@@ -172,10 +206,8 @@ function CustodianView() {
       setEthAmount('');
       await refetchAToken();
       await refetchDeposited();
-      setFeedback('ETH deposited successfully.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown deposit error';
-      setFeedback(message);
+      showContractError(error, 'Unknown deposit error', presentError);
     } finally {
       setBusyAction(false);
     }
@@ -204,6 +236,26 @@ function CustodianView() {
 
   const depositedToken = depositedTokenRaw && selectedToken ? formatUnits(depositedTokenRaw as bigint, selectedToken.decimals) : '0';
   const hasDepositedToken = Boolean(depositedTokenRaw && (depositedTokenRaw as bigint) > 0n);
+  const canDepositToken = useMemo(() => {
+    const trimmed = tokenAmount.trim();
+    if (!trimmed || !selectedToken) return false;
+    try {
+      return parseUnits(trimmed, selectedToken.decimals) > 0n;
+    } catch {
+      return false;
+    }
+  }, [selectedToken, tokenAmount]);
+  const canWithdrawToken = useMemo(() => {
+    if (withdrawAllToken) return hasDepositedToken;
+    if (!selectedToken) return false;
+    const trimmed = withdrawTokenAmount.trim();
+    if (!trimmed) return false;
+    try {
+      return parseUnits(trimmed, selectedToken.decimals) > 0n;
+    } catch {
+      return false;
+    }
+  }, [hasDepositedToken, selectedToken, withdrawAllToken, withdrawTokenAmount]);
 
   const withdrawErc20 = async () => {
     if (!selectedToken) {
@@ -230,7 +282,6 @@ function CustodianView() {
 
     try {
       setWithdrawTokenBusy(true);
-      setWithdrawTokenFeedback('');
 
       const txHash = await writeContractAsync({
         ...CUSTODIAN_CONTRACT,
@@ -245,10 +296,8 @@ function CustodianView() {
       setWithdrawTokenAmount('');
       await refetchATokenForSelected();
       await refetchDepositedToken();
-      setWithdrawTokenFeedback('Token withdrawn successfully.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Token withdraw failed';
-      setWithdrawTokenFeedback(message);
+      showContractError(error, 'Token withdraw failed', presentError);
     } finally {
       setWithdrawTokenBusy(false);
     }
@@ -259,17 +308,15 @@ function CustodianView() {
       setTokenFeedback('Select a token first');
       return;
     }
-    if (!tokenAmount) {
+    if (!canDepositToken) {
       setTokenFeedback('Enter token amount');
       return;
     }
 
     try {
       setTokenBusy(true);
-      setTokenFeedback('');
       // 1) Approve custodian to spend
       const parsed = parseUnits(tokenAmount, selectedToken.decimals);
-      setTokenFeedback(`Approving ${selectedToken.symbol}...`);
       // approve on the token contract
       const approvalHash = await writeContractAsync({
         address: selectedToken.address,
@@ -282,7 +329,6 @@ function CustodianView() {
       if (publicClient) await publicClient.waitForTransactionReceipt({ hash: approvalHash });
 
       // 2) deposit
-      setTokenFeedback(`Depositing ${tokenAmount} ${selectedToken.symbol}...`);
       const txHash = await writeContractAsync({
         ...CUSTODIAN_CONTRACT,
         functionName: 'deposit',
@@ -320,12 +366,10 @@ function CustodianView() {
     }
     try {
       setTokenBusy(true);
-      setTokenFeedback('');
       const meta = await validateTokenOnchain(publicClient, customAddr as `0x${string}`);
       setSelectedToken(meta);
-      setTokenFeedback('Token validated and selected');
     } catch (err: any) {
-      setTokenFeedback(err?.message ?? 'Validation failed');
+      showContractError(err, 'Validation failed', presentError);
     } finally {
       setTokenBusy(false);
     }
@@ -334,7 +378,6 @@ function CustodianView() {
   const handleTokenSelect = (token: TokenMetadata) => {
     setSelectedToken(token);
     setShowPicker(false);
-    // Refresh aToken lookup and deposited balance immediately for visual feedback
     try {
       refetchATokenForSelected?.();
     } catch {
@@ -368,9 +411,6 @@ function CustodianView() {
 
     try {
       setNftBusy(true);
-      setNftFeedback('');
-
-      setNftFeedback(`Approving ${selectedNftCollection.symbol}...`);
       const approvalHash = await writeContractAsync({
         address: selectedNftCollection.address,
         abi: [
@@ -390,14 +430,12 @@ function CustodianView() {
       });
       if (publicClient) await publicClient.waitForTransactionReceipt({ hash: approvalHash });
 
-      setNftFeedback(`Depositing NFT #${nftTokenId}...`);
       const txHash = await writeContractAsync({
         ...CUSTODIAN_CONTRACT,
         functionName: 'depositNFT',
         args: [selectedNftCollection.address, parsedTokenId],
       });
 
-      let successMessage = `NFT #${nftTokenId} deposited successfully.`;
       if (publicClient) {
         const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
         for (const log of receipt.logs) {
@@ -412,10 +450,7 @@ function CustodianView() {
             const args = event.args as { client?: `0x${string}`; collection?: `0x${string}`; tokenId?: bigint };
             if (args.client?.toLowerCase() !== address?.toLowerCase()) continue;
             if (args.collection?.toLowerCase() !== selectedNftCollection.address.toLowerCase()) continue;
-            if (args.tokenId === parsedTokenId) {
-              successMessage = `Deposited NFT #${args.tokenId.toString()} from ${selectedNftCollection.name} successfully.`;
-              break;
-            }
+            if (args.tokenId === parsedTokenId) break;
           } catch {
             // Ignore unrelated logs.
           }
@@ -423,15 +458,13 @@ function CustodianView() {
       }
 
       setNftTokenId('');
-      setNftFeedback(successMessage);
       try {
         await refetchNftBalance?.();
       } catch {
         // ignore
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'NFT deposit failed';
-      setNftFeedback(message);
+      showContractError(error, 'NFT deposit failed', presentError);
     } finally {
       setNftBusy(false);
     }
@@ -450,7 +483,6 @@ function CustodianView() {
 
     try {
       setWithdrawNftBusy(true);
-      setWithdrawNftFeedback('');
 
       const txHash = await writeContractAsync({
         ...CUSTODIAN_CONTRACT,
@@ -463,15 +495,12 @@ function CustodianView() {
       }
 
       await refetchNftBalance?.();
-      setWithdrawNftFeedback('NFT withdrawn successfully.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'NFT withdraw failed';
-      setWithdrawNftFeedback(message);
+      showContractError(error, 'NFT withdraw failed', presentError);
     } finally {
       setWithdrawNftBusy(false);
     }
   };
-  
 
   const submitCustomNft = async () => {
     if (!customNftAddr) {
@@ -480,12 +509,10 @@ function CustodianView() {
     }
     try {
       setNftBusy(true);
-      setNftFeedback('');
       const meta = await validateNftCollectionOnchain(publicClient, customNftAddr as `0x${string}`);
       setSelectedNftCollection(meta);
-      setNftFeedback('NFT collection validated and selected');
     } catch (err: any) {
-      setNftFeedback(err?.message ?? 'Validation failed');
+      showContractError(err, 'Validation failed', presentError);
     } finally {
       setNftBusy(false);
     }
@@ -536,12 +563,10 @@ function CustodianView() {
           onChange={(event) => setEthAmount(event.target.value.trim())}
         />
         <div className="cm-actions-row">
-          <button onClick={depositEth} disabled={busyAction || !address || !(isInitialized as boolean) || !(userAllowed as boolean)}>
+          <button onClick={depositEth} disabled={busyAction || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !canDepositEth}>
             Deposit ETH
           </button>
         </div>
-        {!(isInitialized as boolean) && <p className="cm-feedback" style={{ color: 'orange' }}>Custodian not initialized</p>}
-        {(isInitialized as boolean) && !(userAllowed as boolean) && <p className="cm-feedback" style={{ color: 'orange' }}>Your account is not allowed to deposit</p>}
       </div>
 
       <div className="cm-block">
@@ -563,12 +588,10 @@ function CustodianView() {
           Withdraw all ETH
         </label>
         <div className="cm-actions-row">
-          <button onClick={withdrawEth} disabled={withdrawEthBusy || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !hasDepositedEth}>
+          <button onClick={withdrawEth} disabled={withdrawEthBusy || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !canWithdrawEth}>
             {withdrawAllEth ? 'Withdraw all ETH' : 'Withdraw ETH'}
           </button>
         </div>
-        <p className="cm-feedback">Available: {depositedEth} ETH</p>
-        {withdrawEthFeedback ? <p className="cm-feedback">{withdrawEthFeedback}</p> : null}
       </div>
 
       <div className="cm-block">
@@ -608,13 +631,10 @@ function CustodianView() {
           </div>
         </div>
         <div className="cm-actions-row">
-          <button onClick={depositErc20} disabled={tokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean)}>
+          <button onClick={depositErc20} disabled={tokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !canDepositToken}>
             Approve & Deposit
           </button>
         </div>
-        {!(isInitialized as boolean) && <p className="cm-feedback" style={{ color: 'orange' }}>Custodian not initialized</p>}
-        {(isInitialized as boolean) && !(userAllowed as boolean) && <p className="cm-feedback" style={{ color: 'orange' }}>Your account is not allowed to deposit</p>}
-        {tokenFeedback ? <p className="cm-feedback">{tokenFeedback}</p> : null}
       </div>
 
       <div className="cm-block">
@@ -655,11 +675,10 @@ function CustodianView() {
           Withdraw all {selectedToken ? selectedToken.symbol : 'token'}
         </label>
         <div className="cm-actions-row">
-          <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !hasDepositedToken}>
+          <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !canWithdrawToken}>
             {withdrawAllToken ? 'Withdraw all ERC20' : 'Withdraw ERC20'}
           </button>
         </div>
-        {withdrawTokenFeedback ? <p className="cm-feedback">{withdrawTokenFeedback}</p> : null}
       </div>
 
       <div className="cm-block">
@@ -696,7 +715,6 @@ function CustodianView() {
             Approve & Deposit NFT
           </button>
         </div>
-        {nftFeedback ? <p className="cm-feedback">{nftFeedback}</p> : null}
       </div>
 
       <div className="cm-block">
@@ -726,13 +744,51 @@ function CustodianView() {
             Withdraw NFT
           </button>
         </div>
-        {withdrawNftFeedback ? <p className="cm-feedback">{withdrawNftFeedback}</p> : null}
       </div>
 
       {showPicker ? <TokenPicker onSelect={handleTokenSelect} onClose={() => setShowPicker(false)} /> : null}
       {showNftPicker ? <NFTCollectionPicker onSelect={handleNftCollectionSelect} onClose={() => setShowNftPicker(false)} /> : null}
 
-      {feedback ? <p className="cm-feedback">{feedback}</p> : null}
+      {showErrorModal ? (
+        <div
+          role="presentation"
+          onClick={() => setShowErrorModal(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            padding: 16,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Transaction error"
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: 'min(520px, 100%)',
+              borderRadius: 16,
+              background: '#ffffff',
+              boxShadow: '0 24px 80px rgba(15, 23, 42, 0.35)',
+              padding: 20,
+              border: '1px solid rgba(15, 23, 42, 0.08)',
+            }}
+          >
+            <h3 style={{ margin: '0 0 12px 0' }}>Transaction error</h3>
+            <p style={{ margin: '0 0 16px 0', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{errorModalMessage}</p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setShowErrorModal(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </section>
   );
 }
