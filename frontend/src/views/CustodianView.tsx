@@ -34,9 +34,11 @@ function CustodianView() {
   const [nftFeedback, setNftFeedback] = useState('');
   const [customNftAddr, setCustomNftAddr] = useState('');
   const [withdrawEthAmount, setWithdrawEthAmount] = useState('');
+  const [withdrawAllEth, setWithdrawAllEth] = useState(false);
   const [withdrawEthBusy, setWithdrawEthBusy] = useState(false);
   const [withdrawEthFeedback, setWithdrawEthFeedback] = useState('');
   const [withdrawTokenAmount, setWithdrawTokenAmount] = useState('');
+  const [withdrawAllToken, setWithdrawAllToken] = useState(false);
   const [withdrawTokenBusy, setWithdrawTokenBusy] = useState(false);
   const [withdrawTokenFeedback, setWithdrawTokenFeedback] = useState('');
   const [withdrawNftBusy, setWithdrawNftBusy] = useState(false);
@@ -97,18 +99,24 @@ function CustodianView() {
   });
 
   const depositedEth = depositedRaw ? formatEther(depositedRaw as bigint) : '0';
+  const hasDepositedEth = Boolean(depositedRaw && (depositedRaw as bigint) > 0n);
 
   const withdrawEth = async () => {
-    if (!withdrawEthAmount) {
+    if (!withdrawAllEth && !withdrawEthAmount) {
       setWithdrawEthFeedback('Enter an ETH amount first.');
       return;
     }
 
     let parsedAmount: bigint;
     try {
-      parsedAmount = parseEther(withdrawEthAmount);
+      parsedAmount = withdrawAllEth ? ((depositedRaw as bigint) ?? 0n) : parseEther(withdrawEthAmount);
     } catch {
       setWithdrawEthFeedback('Enter a valid ETH amount.');
+      return;
+    }
+
+    if (parsedAmount <= 0n) {
+      setWithdrawEthFeedback('Nothing to withdraw.');
       return;
     }
 
@@ -195,22 +203,28 @@ function CustodianView() {
   });
 
   const depositedToken = depositedTokenRaw && selectedToken ? formatUnits(depositedTokenRaw as bigint, selectedToken.decimals) : '0';
+  const hasDepositedToken = Boolean(depositedTokenRaw && (depositedTokenRaw as bigint) > 0n);
 
   const withdrawErc20 = async () => {
     if (!selectedToken) {
       setWithdrawTokenFeedback('Select a token first');
       return;
     }
-    if (!withdrawTokenAmount) {
+    if (!withdrawAllToken && !withdrawTokenAmount) {
       setWithdrawTokenFeedback('Enter token amount');
       return;
     }
 
     let parsedAmount: bigint;
     try {
-      parsedAmount = parseUnits(withdrawTokenAmount, selectedToken.decimals);
+      parsedAmount = withdrawAllToken ? ((depositedTokenRaw as bigint) ?? 0n) : parseUnits(withdrawTokenAmount, selectedToken.decimals);
     } catch {
       setWithdrawTokenFeedback('Enter a valid token amount');
+      return;
+    }
+
+    if (parsedAmount <= 0n) {
+      setWithdrawTokenFeedback('Nothing to withdraw');
       return;
     }
 
@@ -537,11 +551,20 @@ function CustodianView() {
           id="withdraw-eth-amount"
           placeholder="0.1"
           value={withdrawEthAmount}
+          disabled={withdrawAllEth}
           onChange={(event) => setWithdrawEthAmount(event.target.value.trim())}
         />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={withdrawAllEth}
+            onChange={(event) => setWithdrawAllEth(event.target.checked)}
+          />
+          Withdraw all ETH
+        </label>
         <div className="cm-actions-row">
-          <button onClick={withdrawEth} disabled={withdrawEthBusy || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || Number(depositedEth) <= 0}>
-            Withdraw ETH
+          <button onClick={withdrawEth} disabled={withdrawEthBusy || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !hasDepositedEth}>
+            {withdrawAllEth ? 'Withdraw all ETH' : 'Withdraw ETH'}
           </button>
         </div>
         <p className="cm-feedback">Available: {depositedEth} ETH</p>
@@ -620,12 +643,20 @@ function CustodianView() {
 
           <div>
             <label>Amount</label>
-            <input value={withdrawTokenAmount} onChange={(e) => setWithdrawTokenAmount(e.target.value.trim())} placeholder="100" />
+            <input value={withdrawTokenAmount} disabled={withdrawAllToken} onChange={(e) => setWithdrawTokenAmount(e.target.value.trim())} placeholder="100" />
           </div>
         </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={withdrawAllToken}
+            onChange={(event) => setWithdrawAllToken(event.target.checked)}
+          />
+          Withdraw all {selectedToken ? selectedToken.symbol : 'token'}
+        </label>
         <div className="cm-actions-row">
-          <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || depositedToken === '0'}>
-            Withdraw ERC20
+          <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !hasDepositedToken}>
+            {withdrawAllToken ? 'Withdraw all ERC20' : 'Withdraw ERC20'}
           </button>
         </div>
         {withdrawTokenFeedback ? <p className="cm-feedback">{withdrawTokenFeedback}</p> : null}
