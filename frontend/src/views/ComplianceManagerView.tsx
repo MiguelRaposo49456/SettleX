@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react';
-import { isAddress } from 'viem';
+import { useEffect, useMemo, useState } from 'react';
+import { isAddress, parseUnits } from 'viem';
 import { useAccount, useReadContract, useWriteContract } from 'wagmi';
 import { usePublicClient } from 'wagmi';
-import { COMPLIANCE_MANAGER_CONTRACT } from '../constants/contracts';
+import { COMPLIANCE_MANAGER_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
+import ATokenABI from '../abis/AToken.json';
+import MockERC20 from '../abis/MockERC20.json';
 
 const USER_STATUS_OPTIONS = [
   { value: 0, label: 'Allowed' },
@@ -23,6 +25,13 @@ function ComplianceManagerView() {
   const [lastTxHash, setLastTxHash] = useState<`0x${string}` | null>(null);
   const [lastTxStatus, setLastTxStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
   const [lastTxBlock, setLastTxBlock] = useState<bigint | null>(null);
+  const [selectedPoolToken, setSelectedPoolToken] = useState<`0x${string}` | ''>('');
+  const [liquidityAmount, setLiquidityAmount] = useState('');
+  const [selectedYieldPoolToken, setSelectedYieldPoolToken] = useState<`0x${string}` | ''>('');
+  const [yieldSeconds, setYieldSeconds] = useState('');
+  const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
+  const [tokenAllowance, setTokenAllowance] = useState<bigint | null>(null);
+  const [poolTokenDisplayNames, setPoolTokenDisplayNames] = useState<Record<string, string>>({});
 
   const validTokenAddress = useMemo(
     () => (isAddress(tokenAddressInput) ? (tokenAddressInput as `0x${string}`) : undefined),
@@ -60,10 +69,99 @@ function ComplianceManagerView() {
     query: { enabled: !!validUserAddress },
   });
 
+  const { data: supportedTokensRaw, refetch: refetchSupportedTokens } = useReadContract({
+    ...LENDING_POOL_CONTRACT,
+    functionName: 'getSupportedTokens',
+  });
+  const { data: lendingPoolAdminRaw } = useReadContract({
+    ...LENDING_POOL_CONTRACT,
+    functionName: 'admin',
+  });
+
   const paused = Boolean(pausedRaw);
   const isOperator = Boolean(isOperatorRaw);
   const tokenBlacklisted = Boolean(tokenBlacklistedRaw);
   const currentUserStatus = Number(userStatusRaw ?? 0);
+  const supportedTokens = (supportedTokensRaw as `0x${string}`[]) || [];
+  const poolAdmin = (lendingPoolAdminRaw as `0x${string}`) || undefined;
+  const isPoolAdmin = Boolean(address && poolAdmin && (address as string).toLowerCase() === poolAdmin.toLowerCase());
+
+  // Fetch aToken symbols for display
+  useEffect(() => {
+    if (!publicClient || supportedTokens.length === 0) return;
+
+    const fetchPoolDisplayNames = async () => {
+      const names: Record<string, string> = {};
+
+      for (const token of supportedTokens) {
+        try {
+          // Get the aToken address for this pool token
+          const aTokenAddress = (await publicClient.readContract({
+            address: LENDING_POOL_CONTRACT.address,
+            abi: LENDING_POOL_CONTRACT.abi,
+            functionName: 'getAToken',
+            args: [token],
+          })) as `0x${string}`;
+
+          if (!aTokenAddress || aTokenAddress === '0x0000000000000000000000000000000000000000') {
+            names[token] = token.slice(0, 6) + '...' + token.slice(-4);
+            continue;
+          }
+
+          // Get the aToken symbol
+          const symbol = (await publicClient.readContract({
+            address: aTokenAddress,
+            abi: ATokenABI.abi,
+            functionName: 'symbol',
+          })) as string;
+
+          names[token] = symbol || token.slice(0, 6) + '...' + token.slice(-4);
+        } catch (error) {
+          console.error(`Failed to fetch symbol for token ${token}:`, error);
+          names[token] = token.slice(0, 6) + '...' + token.slice(-4);
+        }
+      }
+
+      setPoolTokenDisplayNames(names);
+    };
+
+    fetchPoolDisplayNames();
+  }, [supportedTokens, publicClient]);
+
+  useEffect(() => {
+    if (!publicClient || !selectedPoolToken || !address) {
+      setTokenDecimals(null);
+      setTokenAllowance(null);
+      return;
+    }
+
+    const fetchTokenData = async () => {
+      try {
+        const dec = (await publicClient.readContract({
+          address: selectedPoolToken,
+          abi: MockERC20.abi,
+          functionName: 'decimals',
+        })) as unknown;
+        setTokenDecimals(Number(dec));
+      } catch (e) {
+        setTokenDecimals(null);
+      }
+
+      try {
+        const allowance = (await publicClient.readContract({
+          address: selectedPoolToken,
+          abi: MockERC20.abi,
+          functionName: 'allowance',
+          args: [address as `0x${string}`, LENDING_POOL_CONTRACT.address],
+        })) as bigint;
+        setTokenAllowance(allowance);
+      } catch (e) {
+        setTokenAllowance(null);
+      }
+    };
+
+    fetchTokenData();
+  }, [selectedPoolToken, address, publicClient]);
 
   const runAction = async (actionKey: string, action: () => Promise<unknown>, successMessage: string) => {
     try {
@@ -83,7 +181,7 @@ function ComplianceManagerView() {
       setLastTxStatus(receipt.status === 'success' ? 'confirmed' : 'failed');
       setLastTxBlock(receipt.blockNumber ?? null);
       setFeedback(successMessage);
-      await Promise.all([refetchPaused(), refetchOperator(), refetchTokenStatus(), refetchUserStatus()]);
+      await Promise.all([refetchPaused(), refetchOperator(), refetchTokenStatus(), refetchUserStatus(), refetchSupportedTokens()]);
     } catch (error) {
       setLastTxStatus('failed');
       const message = error instanceof Error ? error.message : 'Unknown transaction error';
@@ -169,6 +267,113 @@ function ComplianceManagerView() {
     );
   };
 
+  const provideLiquidity = async () => {
+    if (!selectedPoolToken) {
+      setFeedback('Select a pool token.');
+      return Promise.resolve();
+    }
+
+    if (!liquidityAmount || parseFloat(liquidityAmount) <= 0) {
+      setFeedback('Enter a valid liquidity amount.');
+      return Promise.resolve();
+    }
+
+    if (!isPoolAdmin) {
+      setFeedback('addLiquidity is admin-only. Connect the lending pool admin account or update the contract.');
+      return Promise.resolve();
+    }
+
+    const usedDecimals = tokenDecimals ?? 18;
+    const parsedAmount = parseUnits(liquidityAmount, usedDecimals);
+
+    // If allowance is missing or insufficient, attempt to approve first
+    if (tokenAllowance === null || tokenAllowance < parsedAmount) {
+      setFeedback('Approving token for lending pool...');
+      try {
+        await approveToken();
+      } catch (e) {
+        // approveToken sets feedback on error; abort
+        return Promise.resolve();
+      }
+    }
+
+    return runAction(
+      'provideLiquidity',
+      () =>
+        writeContractAsync({
+          ...LENDING_POOL_CONTRACT,
+          functionName: 'addLiquidity',
+          args: [selectedPoolToken, parsedAmount],
+        }),
+      'Liquidity provided successfully.',
+    );
+  };
+
+  const approveToken = () => {
+    if (!selectedPoolToken) {
+      setFeedback('Select a pool token to approve.');
+      return Promise.resolve();
+    }
+
+    if (!liquidityAmount || parseFloat(liquidityAmount) <= 0) {
+      setFeedback('Enter a valid amount to approve.');
+      return Promise.resolve();
+    }
+
+    const usedDecimals = tokenDecimals ?? 18;
+    const parsedAmount = parseUnits(liquidityAmount, usedDecimals);
+
+    return runAction(
+      'approveToken',
+      () =>
+        writeContractAsync({
+          address: selectedPoolToken,
+          abi: MockERC20.abi,
+          functionName: 'approve',
+          args: [LENDING_POOL_CONTRACT.address, parsedAmount],
+        }),
+      'Token approved successfully.',
+    ).then(async (res) => {
+      // refresh allowance
+      try {
+        const allowance = (await publicClient!.readContract({
+          address: selectedPoolToken,
+          abi: MockERC20.abi,
+          functionName: 'allowance',
+          args: [address as `0x${string}`, LENDING_POOL_CONTRACT.address],
+        })) as bigint;
+        setTokenAllowance(allowance);
+      } catch (e) {
+        // ignore
+      }
+    });
+  };
+
+  const simulateYield = () => {
+    if (!selectedYieldPoolToken) {
+      setFeedback('Select a pool token.');
+      return Promise.resolve();
+    }
+
+    if (!yieldSeconds || parseFloat(yieldSeconds) <= 0) {
+      setFeedback('Enter a valid number of seconds.');
+      return Promise.resolve();
+    }
+
+    const parsedSeconds = BigInt(Math.floor(parseFloat(yieldSeconds)));
+
+    return runAction(
+      'simulateYield',
+      () =>
+        writeContractAsync({
+          ...LENDING_POOL_CONTRACT,
+          functionName: 'simulateYield',
+          args: [selectedYieldPoolToken, parsedSeconds],
+        }),
+      'Yield simulated successfully.',
+    );
+  };
+
   return (
     <section className="cm-panel">
       <header className="cm-header">
@@ -242,6 +447,80 @@ function ComplianceManagerView() {
         <div className="cm-actions-row">
           <button onClick={updateUserStatus} disabled={busyAction !== 'idle' || !isOperator || !validUserAddress}>
             Update User Status
+          </button>
+        </div>
+      </div>
+
+      <div className="cm-block">
+        <h3>Lending Pool Liquidity</h3>
+        <label htmlFor="pool-select">Pool Token</label>
+        <select
+          id="pool-select"
+          value={selectedPoolToken}
+          onChange={(event) => setSelectedPoolToken(event.target.value as `0x${string}`)}
+        >
+          <option value="">Select a pool</option>
+          {supportedTokens.map((token) => (
+            <option key={token} value={token}>
+              {poolTokenDisplayNames[token] || token}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="liquidity-amount">Amount to Provide</label>
+        <input
+          id="liquidity-amount"
+          type="number"
+          placeholder="0.0"
+          value={liquidityAmount}
+          onChange={(event) => setLiquidityAmount(event.target.value)}
+          min="0"
+          step="0.01"
+        />
+        <p className="cm-hint">
+          {selectedPoolToken ? `Token: ${poolTokenDisplayNames[selectedPoolToken] || selectedPoolToken}` : 'Select a token'}
+        </p>
+        <div className="cm-actions-row">
+          <button
+            onClick={provideLiquidity}
+            disabled={busyAction !== 'idle' || !isPoolAdmin || !selectedPoolToken || !liquidityAmount}
+          >
+            Provide Liquidity
+          </button>
+        </div>
+        <p className="cm-hint">Admin: {isPoolAdmin ? 'Yes' : poolAdmin ?? 'unknown'}</p>
+      </div>
+
+      <div className="cm-block">
+        <h3>Simulate Yield</h3>
+        <label htmlFor="yield-pool-select">Pool Token</label>
+        <select
+          id="yield-pool-select"
+          value={selectedYieldPoolToken}
+          onChange={(event) => setSelectedYieldPoolToken(event.target.value as `0x${string}`)}
+        >
+          <option value="">Select a pool</option>
+          {supportedTokens.map((token) => (
+            <option key={token} value={token}>
+              {poolTokenDisplayNames[token] || token}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="yield-seconds">Seconds to Simulate</label>
+        <input
+          id="yield-seconds"
+          type="number"
+          placeholder="0"
+          value={yieldSeconds}
+          onChange={(event) => setYieldSeconds(event.target.value)}
+          min="0"
+          step="1"
+        />
+        <p className="cm-hint">
+          {selectedYieldPoolToken ? `Token: ${poolTokenDisplayNames[selectedYieldPoolToken] || selectedYieldPoolToken}` : 'Select a token'}
+        </p>
+        <div className="cm-actions-row">
+          <button onClick={simulateYield} disabled={busyAction !== 'idle' || !isOperator || !selectedYieldPoolToken}>
+            Simulate Yield
           </button>
         </div>
       </div>
