@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { decodeEventLog, encodePacked, isAddress, keccak256, parseUnits } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
 import { FUNGIBLE_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
@@ -15,11 +15,44 @@ function generateSalt(): `0x${string}` {
   return (`0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`) as `0x${string}`;
 }
 
-function formatAddressLabel(metadata: TokenMetadata | null, input: string, isValid: boolean) {
+function formatAddressLabel(metadata: TokenMetadata | null, input: string, isValid: boolean, fetchError = false) {
   if (!input) return '';
   if (!isValid) return '⚠ Invalid address';
+  if (fetchError) return '⚠ Not a valid ERC20 token';
   if (metadata) return `✓ ${metadata.symbol} — ${metadata.name} (${metadata.decimals} decimals)`;
   return 'Fetching token info...';
+}
+
+type OrderRecord = {
+  orderId: bigint;
+  client: `0x${string}`;
+  tokenIn: `0x${string}`;
+  tokenOut: `0x${string}`;
+  amount: bigint;
+  price: bigint;
+  side: number;
+  partialAllowed: boolean;
+  status: number;
+  block: bigint;
+};
+
+function shortAddress(address: string) {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function formatAmount(value: bigint, decimals: number) {
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  const base = 10n ** BigInt(decimals);
+  const whole = absolute / base;
+  const fraction = absolute % base;
+
+  if (fraction === 0n) {
+    return `${negative ? '-' : ''}${whole.toString()}`;
+  }
+
+  const fractionText = fraction.toString().padStart(decimals, '0').replace(/0+$/, '');
+  return `${negative ? '-' : ''}${whole.toString()}.${fractionText}`;
 }
 
 function OrderbookView() {
@@ -35,10 +68,17 @@ function OrderbookView() {
   const [partialAllowed, setPartialAllowed] = useState(true);
   const [tokenInMetadata, setTokenInMetadata] = useState<TokenMetadata | null>(null);
   const [tokenOutMetadata, setTokenOutMetadata] = useState<TokenMetadata | null>(null);
+  const [tokenInError, setTokenInError] = useState(false);
+  const [tokenOutError, setTokenOutError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [lastCommitHash, setLastCommitHash] = useState<`0x${string}` | null>(null);
   const [lastRevealHash, setLastRevealHash] = useState<`0x${string}` | null>(null);
+  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [tokenMetadataByAddress, setTokenMetadataByAddress] = useState<Record<string, TokenMetadata | null>>({});
+  const [pendingCancel, setPendingCancel] = useState<bigint | null>(null);
+  const [pendingTake, setPendingTake] = useState<bigint | null>(null);
 
   const validTokenIn = useMemo(
     () => (isAddress(tokenInInput) ? (tokenInInput as `0x${string}`) : undefined),
@@ -62,13 +102,16 @@ function OrderbookView() {
   const validateSingleToken = async (
     tokenAddress: `0x${string}`,
     setter: (meta: TokenMetadata | null) => void,
+    setError: (err: boolean) => void,
   ) => {
     if (!publicClient) return;
+    setError(false);
     try {
         const meta = await validateTokenOnchain(publicClient, tokenAddress);
         setter(meta);
     } catch {
         setter(null);
+        setError(true);
     }
   };
 
@@ -110,6 +153,109 @@ function OrderbookView() {
 
     return { tokenIn, tokenOut };
   };
+
+  const refreshOrders = async () => {
+    if (!publicClient) return;
+
+    try {
+      setOrdersLoading(true);
+      const latestBlock = await publicClient.getBlockNumber();
+      const logs = await publicClient.getLogs({
+        address: FUNGIBLE_ORDERBOOK_CONTRACT.address,
+        event: {
+          type: 'event',
+          name: 'OrderPlaced',
+          inputs: [
+            { indexed: true, name: 'orderId', type: 'uint256' },
+            { indexed: true, name: 'client', type: 'address' },
+            { indexed: true, name: 'pairId', type: 'bytes32' },
+            { indexed: false, name: 'tokenIn', type: 'address' },
+            { indexed: false, name: 'tokenOut', type: 'address' },
+            { indexed: false, name: 'price', type: 'uint256' },
+            { indexed: false, name: 'amount', type: 'uint256' },
+            { indexed: false, name: 'side', type: 'uint8' },
+            { indexed: false, name: 'partialAllowed', type: 'bool' },
+          ],
+        },
+        fromBlock: 0n,
+        toBlock: latestBlock,
+      });
+
+      const nextOrders: OrderRecord[] = [];
+
+      for (const log of logs) {
+        const decoded = decodeEventLog({
+          abi: FUNGIBLE_ORDERBOOK_CONTRACT.abi,
+          data: log.data,
+          topics: log.topics,
+        });
+
+        if (decoded.eventName !== 'OrderPlaced') continue;
+
+        const args = decoded.args as { orderId?: bigint } | undefined;
+        const orderId = args?.orderId;
+        if (orderId === undefined) continue;
+        const order = await publicClient.readContract({
+          ...FUNGIBLE_ORDERBOOK_CONTRACT,
+          functionName: 'getOrder',
+          args: [orderId],
+        }) as {
+          id: bigint;
+          client: `0x${string}`;
+          tokenIn: `0x${string}`;
+          tokenOut: `0x${string}`;
+          amount: bigint;
+          price: bigint;
+          side: bigint;
+          partialAllowed: boolean;
+          status: bigint;
+          block: bigint;
+        };
+
+        nextOrders.push({
+          orderId: order.id,
+          client: order.client,
+          tokenIn: order.tokenIn,
+          tokenOut: order.tokenOut,
+          amount: order.amount,
+          price: order.price,
+          side: Number(order.side),
+          partialAllowed: order.partialAllowed,
+          status: Number(order.status),
+          block: order.block,
+        });
+      }
+
+      nextOrders.sort((a, b) => Number(b.orderId - a.orderId));
+      setOrders(nextOrders);
+
+      const uniqueAddresses = Array.from(
+        new Set(nextOrders.flatMap((order) => [order.tokenIn.toLowerCase(), order.tokenOut.toLowerCase()])),
+      ) as `0x${string}`[];
+
+      const metadataEntries = await Promise.all(
+        uniqueAddresses.map(async (tokenAddress) => {
+          try {
+            const metadata = await validateTokenOnchain(publicClient, tokenAddress);
+            return [tokenAddress.toLowerCase(), metadata] as const;
+          } catch {
+            return [tokenAddress.toLowerCase(), null] as const;
+          }
+        }),
+      );
+
+      setTokenMetadataByAddress(Object.fromEntries(metadataEntries));
+    } catch (error) {
+      console.warn('Failed to load orderbook orders', error);
+      setOrders([]);
+    } finally {
+      setOrdersLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshOrders();
+  }, [publicClient, lastRevealHash]);
 
   const submitOrder = async () => {
     if (!address) {
@@ -229,11 +375,110 @@ function OrderbookView() {
       setFeedback('Order submitted successfully.');
       setAmountInInput('');
       setAmountOutInput('');
+      await refreshOrders();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Order submission failed';
       setFeedback(message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const cancelOrder = async (orderId: bigint) => {
+    if (!address) {
+      setFeedback('Connect your wallet first.');
+      setPendingCancel(null);
+      return;
+    }
+
+    try {
+      setBusy(true);
+      setFeedback(`Sending cancel for order #${orderId.toString()}...`);
+      const txHash = await writeContractAsync({
+        ...FUNGIBLE_ORDERBOOK_CONTRACT,
+        functionName: 'cancelOrder',
+        args: [orderId],
+      });
+
+      if (!publicClient) throw new Error('No public client available to track transaction.');
+      await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+      setFeedback(`Order #${orderId.toString()} cancelled.`);
+      // Refresh orders to reflect cancellation
+      await refreshOrders();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Cancel failed';
+      setFeedback(message);
+    } finally {
+      setBusy(false);
+      setPendingCancel(null);
+    }
+  };
+
+  const takeOrder = async (orderId: bigint, takerAmount: bigint) => {
+    if (!address) {
+      setFeedback('Connect your wallet first.');
+      setPendingTake(null);
+      return;
+    }
+
+    try {
+      setBusy(true);
+      const salt = generateSalt();
+
+      const commitHash = keccak256(
+        encodePacked(
+          ['address', 'uint256', 'uint256', 'bytes32'],
+          [address as `0x${string}`, orderId, takerAmount, salt],
+        ),
+      );
+
+      setFeedback('Submitting take commit...');
+      const commitTxHash = await writeContractAsync({
+        ...FUNGIBLE_ORDERBOOK_CONTRACT,
+        functionName: 'commit',
+        args: [commitHash, 1],
+      });
+
+      if (!publicClient) throw new Error('No public client available to track transaction.');
+      const commitReceipt = await publicClient.waitForTransactionReceipt({ hash: commitTxHash });
+
+      const committedEvent = commitReceipt.logs
+        .map((log) => {
+          try {
+            return decodeEventLog({ abi: FUNGIBLE_ORDERBOOK_CONTRACT.abi, data: log.data, topics: log.topics });
+          } catch {
+            return null;
+          }
+        })
+        .find((event) => event?.eventName === 'Committed');
+
+      const commitId = committedEvent?.args && 'commitId' in committedEvent.args
+        ? (committedEvent.args.commitId as bigint)
+        : undefined;
+
+      if (commitId === undefined) throw new Error('Commit transaction succeeded but commitId was not found.');
+
+      setFeedback('Waiting one block before revealing take...');
+      await mineOneBlockIfPossible(commitReceipt.blockNumber ?? 0n);
+
+      setFeedback('Revealing take...');
+      const revealTxHash = await writeContractAsync({
+        ...FUNGIBLE_ORDERBOOK_CONTRACT,
+        functionName: 'revealTake',
+        args: [commitId, orderId, takerAmount, salt],
+      });
+
+      await publicClient.waitForTransactionReceipt({ hash: revealTxHash });
+
+      setFeedback('Take submitted successfully.');
+      await refreshOrders();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Take failed';
+      setFeedback(message);
+    } finally {
+      setBusy(false);
+      setPendingTake(null);
     }
   };
 
@@ -245,26 +490,125 @@ function OrderbookView() {
       </header>
 
       <div className="cm-block">
+        <h3>Orderbook</h3>
+        {ordersLoading ? (
+          <p className="cm-hint">Loading orders...</p>
+        ) : orders.length === 0 ? (
+          <p className="cm-hint">No orders submitted yet.</p>
+        ) : (
+          <div style={{ display: 'grid', gap: 12 }}>
+            {orders.filter((order) => order.status !== 0).map((order) => {
+              const tokenInMeta = tokenMetadataByAddress[order.tokenIn.toLowerCase()] ?? null;
+              const tokenOutMeta = tokenMetadataByAddress[order.tokenOut.toLowerCase()] ?? null;
+              const normalizedIsTokenIn = order.tokenIn.toLowerCase() < order.tokenOut.toLowerCase();
+              const amountIn = normalizedIsTokenIn
+                ? order.amount
+                : order.side === 0
+                  ? (order.amount * 1_000000000000000000n) / order.price
+                  : (order.amount * order.price) / 1_000000000000000000n;
+              const amountOut = normalizedIsTokenIn
+                ? order.side === 0
+                  ? (order.amount * order.price) / 1_000000000000000000n
+                  : (order.amount * 1_000000000000000000n) / order.price
+                : order.amount;
+
+              return (
+                <div key={order.orderId.toString()} style={{ padding: 12, border: '1px solid rgba(15, 23, 42, 0.08)', borderRadius: 12 }}>
+                  <strong>Order #{order.orderId.toString()}</strong>
+                  <p className="cm-hint">
+                    Token In: {tokenInMeta ? `${tokenInMeta.symbol} — ${tokenInMeta.name}` : shortAddress(order.tokenIn)} ({order.tokenIn})
+                  </p>
+                  <p className="cm-hint">
+                    Token Out: {tokenOutMeta ? `${tokenOutMeta.symbol} — ${tokenOutMeta.name}` : shortAddress(order.tokenOut)} ({order.tokenOut})
+                  </p>
+                  <p className="cm-hint">Side: {ORDER_SIDE_OPTIONS.find((option) => option.value === order.side)?.label ?? order.side}</p>
+                  <p className="cm-hint">Amount In: {tokenInMeta ? formatAmount(amountIn, tokenInMeta.decimals) : amountIn.toString()}</p>
+                  <p className="cm-hint">Amount Out: {tokenOutMeta ? formatAmount(amountOut, tokenOutMeta.decimals) : amountOut.toString()}</p>
+                  <p className="cm-hint">Partial fills: {order.partialAllowed ? 'Yes' : 'No'}</p>
+                  <p className="cm-hint">Status: {order.status === 2 ? 'Active' : order.status === 1 ? 'Matched' : 'Inactive'}</p>
+                  <p className="cm-hint">Client: {shortAddress(order.client)}</p>
+                  {address && address.toLowerCase() === order.client.toLowerCase() && order.status === 2 ? (
+                    <div style={{ marginTop: 8 }}>
+                      {pendingCancel === order.orderId ? (
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button
+                            onClick={() => void cancelOrder(order.orderId)}
+                            disabled={busy}
+                          >
+                            Confirm Cancel
+                          </button>
+                          <button
+                            onClick={() => setPendingCancel(null)}
+                            disabled={busy}
+                          >
+                            Abort
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setPendingCancel(order.orderId)}
+                          disabled={busy}
+                        >
+                          Cancel Order
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                  {address && address.toLowerCase() !== order.client.toLowerCase() && order.status === 2 ? (
+                    <div style={{ marginTop: 8 }}>
+                      {pendingTake === order.orderId ? (
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button
+                            onClick={() => void takeOrder(order.orderId, order.amount)}
+                            disabled={busy}
+                          >
+                            Confirm Take
+                          </button>
+                          <button
+                            onClick={() => setPendingTake(null)}
+                            disabled={busy}
+                          >
+                            Abort
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setPendingTake(order.orderId)}
+                          disabled={busy}
+                        >
+                          Take Order
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="cm-block">
         <h3>Submit Order</h3>
         <label htmlFor="token-in">Token In</label>
         <input
             id="token-in"
             placeholder="0x..."
             value={tokenInInput}
-            onChange={(event) => { setTokenInInput(event.target.value.trim()); setTokenInMetadata(null); }}
-            onBlur={() => { if (validTokenIn) validateSingleToken(validTokenIn, setTokenInMetadata); }}
+            onChange={(event) => { setTokenInInput(event.target.value.trim()); setTokenInMetadata(null); setTokenInError(false); }}
+            onBlur={() => { if (validTokenIn) validateSingleToken(validTokenIn, setTokenInMetadata, setTokenInError); }}
         />
-        <p className="cm-hint">{formatAddressLabel(tokenInMetadata, tokenInInput, !!validTokenIn)}</p>
+        <p className="cm-hint">{formatAddressLabel(tokenInMetadata, tokenInInput, !!validTokenIn, tokenInError)}</p>
 
         <label htmlFor="token-out">Token Out</label>
         <input
             id="token-out"
             placeholder="0x..."
             value={tokenOutInput}
-            onChange={(event) => { setTokenOutInput(event.target.value.trim()); setTokenOutMetadata(null); }}
-            onBlur={() => { if (validTokenOut) validateSingleToken(validTokenOut, setTokenOutMetadata); }}
+            onChange={(event) => { setTokenOutInput(event.target.value.trim()); setTokenOutMetadata(null); setTokenOutError(false); }}
+            onBlur={() => { if (validTokenOut) validateSingleToken(validTokenOut, setTokenOutMetadata, setTokenOutError); }}
         />
-        <p className="cm-hint">{formatAddressLabel(tokenOutMetadata, tokenOutInput, !!validTokenOut)}</p>
+        <p className="cm-hint">{formatAddressLabel(tokenOutMetadata, tokenOutInput, !!validTokenOut, tokenOutError)}</p>
         <label htmlFor="amount-in">Amount In</label>
         <input
           id="amount-in"
@@ -331,6 +675,7 @@ function OrderbookView() {
       ) : null}
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
+
     </section>
   );
 }

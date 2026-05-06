@@ -44,21 +44,25 @@ function App() {
               {VIEWS.map((view) => (
                 <button
                   key={view.id}
+                  type="button"
                   className={activeView === view.id ? 'active' : ''}
                   onClick={() => setActiveView(view.id)}
+                  aria-pressed={activeView === view.id}
                 >
                   {view.label}
                 </button>
               ))}
             </nav>
 
-            {activeView === 'compliance' ? (
+            <section hidden={activeView !== 'compliance'}>
               <ComplianceManagerView />
-            ) : activeView === 'orderbook' ? (
+            </section>
+            <section hidden={activeView !== 'orderbook'}>
               <OrderbookView />
-            ) : (
+            </section>
+            <section hidden={activeView !== 'custodian'}>
               <CustodianView />
-            )}
+            </section>
           </section>
         )}
       </main>
