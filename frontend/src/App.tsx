@@ -3,12 +3,14 @@ import { useAccount } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import ComplianceManagerView from './views/ComplianceManagerView';
 import CustodianView from './views/CustodianView';
+import OrderbookView from './views/OrderbookView';
 import './App.css';
 
-type ViewId = 'compliance' | 'custodian';
+type ViewId = 'compliance' | 'custodian' | 'orderbook';
 
 const VIEWS: Array<{ id: ViewId; label: string }> = [
   { id: 'compliance', label: 'Compliance Manager' },
+  { id: 'orderbook', label: 'Orderbook' },
   { id: 'custodian', label: 'Custodian' },
 ];
 
@@ -50,7 +52,13 @@ function App() {
               ))}
             </nav>
 
-            {activeView === 'compliance' ? <ComplianceManagerView /> : <CustodianView />}
+            {activeView === 'compliance' ? (
+              <ComplianceManagerView />
+            ) : activeView === 'orderbook' ? (
+              <OrderbookView />
+            ) : (
+              <CustodianView />
+            )}
           </section>
         )}
       </main>

@@ -333,7 +333,7 @@ function ComplianceManagerView() {
           args: [LENDING_POOL_CONTRACT.address, parsedAmount],
         }),
       'Token approved successfully.',
-    ).then(async (res) => {
+    ).then(async () => {
       // refresh allowance
       try {
         const allowance = (await publicClient!.readContract({
