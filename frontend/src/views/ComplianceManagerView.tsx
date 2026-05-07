@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { isAddress, parseUnits } from 'viem';
 import { useAccount, useReadContract, useWriteContract } from 'wagmi';
 import { usePublicClient } from 'wagmi';
-import { COMPLIANCE_MANAGER_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
+import { COMPLIANCE_MANAGER_CONTRACT, LENDING_POOL_CONTRACT, SETTLEMENT_ENGINE_CONTRACT } from '../constants/contracts';
 import ATokenABI from '../abis/AToken.json';
 import MockERC20 from '../abis/MockERC20.json';
 
@@ -32,6 +32,12 @@ function ComplianceManagerView() {
   const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
   const [tokenAllowance, setTokenAllowance] = useState<bigint | null>(null);
   const [poolTokenDisplayNames, setPoolTokenDisplayNames] = useState<Record<string, string>>({});
+  const [settlementWindow, setSettlementWindow] = useState<number | null>(null);
+  const [newSettlementWindow, setNewSettlementWindow] = useState('');
+  
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
+  const [settlementLoaded, setSettlementLoaded] = useState(false);
+  
 
   const validTokenAddress = useMemo(
     () => (isAddress(tokenAddressInput) ? (tokenAddressInput as `0x${string}`) : undefined),
@@ -374,6 +380,121 @@ function ComplianceManagerView() {
     );
   };
 
+  const fetchSettlementInfo = useCallback(async () => {
+    if (!publicClient) return;
+
+    try {
+      // Read settlement window and batchOpenedAt from contract
+      const window = (await publicClient.readContract({
+        ...SETTLEMENT_ENGINE_CONTRACT,
+        functionName: 'settlementWindowSeconds',
+      })) as bigint;
+
+      const openedAt = (await publicClient.readContract({
+        ...SETTLEMENT_ENGINE_CONTRACT,
+        functionName: 'batchOpenedAt',
+      })) as bigint;
+
+      // Contract's helper that returns time remaining (may use block.timestamp internally)
+      const timeRemaining = (await publicClient.readContract({
+        ...SETTLEMENT_ENGINE_CONTRACT,
+        functionName: 'timeUntilSettlement',
+      })) as bigint;
+
+      // Also fetch latest block to compute a local countdown based on on-chain timestamps
+      const latestBlock = await publicClient.getBlock({ blockTag: 'latest' });
+      const blockTs = Number(latestBlock.timestamp ?? 0n);
+
+      const computedRemaining = Math.max(0, Number(openedAt) + Number(window) - blockTs);
+
+      setSettlementWindow(Number(window));
+      // Resync client countdown: only adjust downward to avoid fetch resetting it upward
+      setCountdownSeconds((prev) => {
+        if (prev === null) return computedRemaining;
+        // If on-chain/computed remaining is significantly smaller, resync downward
+        if (computedRemaining < prev - 1) return computedRemaining;
+        // Otherwise keep the current ticking value to avoid pushes back in time
+        return prev;
+      });
+      
+      setSettlementLoaded(true);
+
+      // Log fetch for debugging
+      // eslint-disable-next-line no-console
+      console.debug('fetchSettlementInfo', {
+        window: Number(window),
+        openedAt: Number(openedAt),
+        contractTimeRemaining: Number(timeRemaining),
+        computedRemaining,
+        blockNumber: Number(latestBlock.number ?? 0n),
+        blockTs,
+        fetchedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('Failed to fetch settlement info', err);
+    }
+  }, [publicClient]);
+
+  useEffect(() => {
+    void fetchSettlementInfo();
+    const interval = setInterval(() => void fetchSettlementInfo(), 10000);
+    return () => clearInterval(interval);
+  }, [fetchSettlementInfo]);
+
+  // Tick local countdown every second based on the computed countdownSeconds
+  useEffect(() => {
+    const tick = setInterval(() => {
+      setCountdownSeconds((prev) => {
+        if (prev === null) return null;
+        if (prev <= 0) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  const updateSettlementWindow = () => {
+    if (!newSettlementWindow || parseFloat(newSettlementWindow) <= 0) {
+      setFeedback('Enter a valid settlement window duration in seconds.');
+      return Promise.resolve();
+    }
+
+    const newWindow = BigInt(Math.floor(parseFloat(newSettlementWindow)));
+
+    return runAction(
+      'updateSettlementWindow',
+      () =>
+        writeContractAsync({
+          ...SETTLEMENT_ENGINE_CONTRACT,
+          functionName: 'setSettlementWindow',
+          args: [newWindow],
+        }),
+      'Settlement window updated successfully.',
+    ).then(() => {
+      setNewSettlementWindow('');
+      void fetchSettlementInfo();
+    });
+  };
+
+  const settleBatch = () => {
+    if (!settlementLoaded || countdownSeconds === null || countdownSeconds > 0) {
+      setFeedback('Settlement window has not expired yet.');
+      return Promise.resolve();
+    }
+
+    return runAction(
+      'settleBatch',
+      () =>
+        writeContractAsync({
+          ...SETTLEMENT_ENGINE_CONTRACT,
+          functionName: 'settleBatch',
+        }),
+      'Batch settled successfully.',
+    ).then(() => {
+      void fetchSettlementInfo();
+    });
+  };
+
   return (
     <section className="cm-panel">
       <header className="cm-header">
@@ -523,6 +644,52 @@ function ComplianceManagerView() {
             Simulate Yield
           </button>
         </div>
+      </div>
+
+      <div className="cm-block">
+        <h3>Settlement Control</h3>
+        <div className="cm-status-grid">
+          <div className="cm-status-card">
+            <span>Settlement Window</span>
+            <strong>{settlementWindow ? `${settlementWindow} seconds` : 'Loading...'}</strong>
+          </div>
+          <div className="cm-status-card">
+            <span>Time Until Settlement</span>
+            <strong>{settlementLoaded && countdownSeconds !== null ? `${countdownSeconds}s` : 'Loading...'}</strong>
+          </div>
+        </div>
+
+        <label htmlFor="new-settlement-window">New Settlement Window (seconds)</label>
+        <input
+          id="new-settlement-window"
+          type="number"
+          placeholder="300"
+          value={newSettlementWindow}
+          onChange={(event) => setNewSettlementWindow(event.target.value)}
+          min="60"
+          step="1"
+        />
+        <p className="cm-hint">Minimum: 60 seconds</p>
+
+        <div className="cm-actions-row">
+          <button
+            onClick={updateSettlementWindow}
+            disabled={busyAction !== 'idle' || !isOperator || !newSettlementWindow}
+          >
+            Update Settlement Window
+          </button>
+          <button
+            onClick={settleBatch}
+            disabled={busyAction !== 'idle' || !isOperator || !settlementLoaded || (countdownSeconds !== null && countdownSeconds > 0)}
+          >
+            Settle Batch
+          </button>
+        </div>
+        <p className="cm-hint">
+          {countdownSeconds !== null && countdownSeconds > 0
+            ? `Settlement window expires in ${countdownSeconds} seconds`
+            : 'Settlement window has expired. You can settle the batch.'}
+        </p>
       </div>
 
       {lastTxHash ? (
