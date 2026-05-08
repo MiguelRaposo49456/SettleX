@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isAddress, keccak256, encodePacked, decodeEventLog } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
+import TokenPicker from '../components/TokenPicker';
+import NFTCollectionPicker from '../components/NFTCollectionPicker';
 import { NFT_ORDERBOOK_CONTRACT } from '../constants/contracts';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation';
 import validateNftCollectionOnchain, { type NFTCollectionMetadata } from '../hooks/useNftValidation';
@@ -92,6 +94,13 @@ function NFTOrderbookView() {
   const [nftMetadataByAddress, setNftMetadataByAddress] = useState<Record<string, NFTCollectionMetadata | null>>({});
   const [pendingCancelListingId, setPendingCancelListingId] = useState<bigint | null>(null);
   const [pendingCancelOfferId, setPendingCancelOfferId] = useState<bigint | null>(null);
+  const [showListingCollectionPicker, setShowListingCollectionPicker] = useState(false);
+  const [showListingPaymentTokenPicker, setShowListingPaymentTokenPicker] = useState(false);
+  const [showOfferCollectionPicker, setShowOfferCollectionPicker] = useState(false);
+  const [showOfferTokenPicker, setShowOfferTokenPicker] = useState(false);
+  const [marketSearchQuery, setMarketSearchQuery] = useState('');
+  const [showMyListingsOnly, setShowMyListingsOnly] = useState(false);
+  const [showMyOffersOnly, setShowMyOffersOnly] = useState(false);
 
   // Listing form state
   const [listingCollectionInput, setListingCollectionInput] = useState('');
@@ -204,6 +213,52 @@ function NFTOrderbookView() {
     }
     const nftMeta = nftMetadataByAddress[addressValue.toLowerCase()];
     return nftMeta ? `${nftMeta.symbol} - ${nftMeta.name}` : shortAddress(addressValue);
+  };
+
+  const handleListingCollectionSelect = (collection: NFTCollectionMetadata) => {
+    setListingCollectionInput(collection.address);
+    setListingCollectionMetadata(collection);
+    setListingCollectionError(false);
+    setShowListingCollectionPicker(false);
+  };
+
+  const handleListingPaymentTokenSelect = (token: TokenMetadata) => {
+    setListingPaymentTokenInput(token.address);
+    setListingPaymentTokenMetadata(token);
+    setListingPaymentCollectionMetadata(null);
+    setListingPaymentError(false);
+    setShowListingPaymentTokenPicker(false);
+  };
+
+  const handleListingPaymentCollectionSelect = (collection: NFTCollectionMetadata) => {
+    setListingPaymentTokenInput(collection.address);
+    setListingPaymentCollectionMetadata(collection);
+    setListingPaymentTokenMetadata(null);
+    setListingPaymentError(false);
+    setShowListingPaymentTokenPicker(false);
+  };
+
+  const handleOfferCollectionSelect = (collection: NFTCollectionMetadata) => {
+    setOfferCollectionInput(collection.address);
+    setOfferCollectionMetadata(collection);
+    setOfferCollectionError(false);
+    setShowOfferCollectionPicker(false);
+  };
+
+  const handleOfferTokenSelect = (token: TokenMetadata) => {
+    setOfferTokenInput(token.address);
+    setOfferTokenMetadata(token);
+    setOfferTokenCollectionMetadata(null);
+    setOfferTokenError(false);
+    setShowOfferTokenPicker(false);
+  };
+
+  const handleOfferTokenCollectionSelect = (collection: NFTCollectionMetadata) => {
+    setOfferTokenInput(collection.address);
+    setOfferTokenCollectionMetadata(collection);
+    setOfferTokenMetadata(null);
+    setOfferTokenError(false);
+    setShowOfferTokenPicker(false);
   };
 
   const refreshMarket = async () => {
@@ -470,6 +525,74 @@ function NFTOrderbookView() {
     };
   }, [publicClient]);
 
+  const filteredListings = useMemo(() => {
+    let result = listings;
+    if (showMyListingsOnly && address) {
+      result = result.filter((l) => l.seller.toLowerCase() === address.toLowerCase());
+    }
+    if (marketSearchQuery.trim()) {
+      const q = marketSearchQuery.trim().toLowerCase();
+      result = result.filter((l) => {
+        const listingId = l.listingId.toString().toLowerCase();
+        const collectionMeta = nftMetadataByAddress[l.collection.toLowerCase()];
+        const collectionSymbol = collectionMeta?.symbol.toLowerCase() || '';
+        const collectionName = collectionMeta?.name.toLowerCase() || '';
+        const collectionAddr = l.collection.toLowerCase();
+        const paymentMeta =
+          l.paymentType === 0
+            ? tokenMetadataByAddress[l.paymentToken.toLowerCase()]
+            : nftMetadataByAddress[l.paymentToken.toLowerCase()];
+        const paymentSymbol = paymentMeta?.symbol.toLowerCase() || '';
+        const paymentName = paymentMeta?.name.toLowerCase() || '';
+        const paymentAddr = l.paymentToken.toLowerCase();
+        return (
+          listingId.includes(q) ||
+          collectionSymbol.includes(q) ||
+          collectionName.includes(q) ||
+          collectionAddr.includes(q) ||
+          paymentSymbol.includes(q) ||
+          paymentName.includes(q) ||
+          paymentAddr.includes(q)
+        );
+      });
+    }
+    return result;
+  }, [listings, marketSearchQuery, showMyListingsOnly, address, nftMetadataByAddress, tokenMetadataByAddress]);
+
+  const filteredOffers = useMemo(() => {
+    let result = offers;
+    if (showMyOffersOnly && address) {
+      result = result.filter((o) => o.buyer.toLowerCase() === address.toLowerCase());
+    }
+    if (marketSearchQuery.trim()) {
+      const q = marketSearchQuery.trim().toLowerCase();
+      result = result.filter((o) => {
+        const offerId = o.offerId.toString().toLowerCase();
+        const collectionMeta = nftMetadataByAddress[o.collection.toLowerCase()];
+        const collectionSymbol = collectionMeta?.symbol.toLowerCase() || '';
+        const collectionName = collectionMeta?.name.toLowerCase() || '';
+        const collectionAddr = o.collection.toLowerCase();
+        const offerMeta =
+          o.offerType === 0
+            ? tokenMetadataByAddress[o.offerToken.toLowerCase()]
+            : nftMetadataByAddress[o.offerToken.toLowerCase()];
+        const offerSymbol = offerMeta?.symbol.toLowerCase() || '';
+        const offerName = offerMeta?.name.toLowerCase() || '';
+        const offerAddr = o.offerToken.toLowerCase();
+        return (
+          offerId.includes(q) ||
+          collectionSymbol.includes(q) ||
+          collectionName.includes(q) ||
+          collectionAddr.includes(q) ||
+          offerSymbol.includes(q) ||
+          offerName.includes(q) ||
+          offerAddr.includes(q)
+        );
+      });
+    }
+    return result;
+  }, [offers, marketSearchQuery, showMyOffersOnly, address, nftMetadataByAddress, tokenMetadataByAddress]);
+
   const marketGroups = useMemo(() => {
     const groups = new Map<string, {
       collection: `0x${string}`;
@@ -478,7 +601,7 @@ function NFTOrderbookView() {
       offers: NFTOfferRecord[];
     }>();
 
-    for (const listing of listings) {
+    for (const listing of filteredListings) {
       const key = nftKey(listing.collection, listing.tokenId);
       const group = groups.get(key) ?? {
         collection: listing.collection,
@@ -490,7 +613,7 @@ function NFTOrderbookView() {
       groups.set(key, group);
     }
 
-    for (const offer of offers) {
+    for (const offer of filteredOffers) {
       const key = nftKey(offer.collection, offer.tokenId);
       const group = groups.get(key) ?? {
         collection: offer.collection,
@@ -509,7 +632,7 @@ function NFTOrderbookView() {
         offers: [...group.offers].sort((a, b) => Number(b.offerId - a.offerId)),
       }))
       .sort((a, b) => Number(b.tokenId - a.tokenId));
-  }, [listings, offers]);
+  }, [filteredListings, filteredOffers]);
 
   const submitListing = async () => {
     if (!address || !canSubmitListing) {
@@ -817,9 +940,34 @@ function NFTOrderbookView() {
         </div>
 
         <p style={{ marginTop: 0, marginBottom: 8 }}><strong>Active Market</strong></p>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            type="text"
+            placeholder="Search by ID, NFT symbol, token symbol, or address..."
+            value={marketSearchQuery}
+            onChange={(e) => setMarketSearchQuery(e.target.value)}
+            style={{ flex: 1, minWidth: 220, padding: '6px 8px' }}
+          />
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={showMyListingsOnly}
+              onChange={(e) => setShowMyListingsOnly(e.target.checked)}
+            />
+            My Listings
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={showMyOffersOnly}
+              onChange={(e) => setShowMyOffersOnly(e.target.checked)}
+            />
+            My Offers
+          </label>
+        </div>
 
         {marketGroups.length === 0 ? (
-          <p className="cm-hint">No active NFT listings or offers found.</p>
+          <p className="cm-hint">{listings.length === 0 && offers.length === 0 ? 'No active NFT listings or offers found.' : 'No listings/offers match your filters.'}</p>
         ) : (
           <div style={{ display: 'grid', gap: 12 }}>
             {marketGroups.map((group) => (
@@ -976,21 +1124,27 @@ function NFTOrderbookView() {
           <h3>Create NFT Listing</h3>
 
           <label htmlFor="listing-collection">NFT Collection Address</label>
-          <input
-            id="listing-collection"
-            placeholder="0x..."
-            value={listingCollectionInput}
-            onChange={(event) => {
-              setListingCollectionInput(event.target.value.trim());
-              setListingCollectionMetadata(null);
-              setListingCollectionError(false);
-            }}
-            onBlur={() => {
-              if (validListingCollection) {
-                void validateSingleNft(validListingCollection, setListingCollectionMetadata, setListingCollectionError);
-              }
-            }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              id="listing-collection"
+              placeholder="0x..."
+              value={listingCollectionInput}
+              onChange={(event) => {
+                setListingCollectionInput(event.target.value.trim());
+                setListingCollectionMetadata(null);
+                setListingCollectionError(false);
+              }}
+              onBlur={() => {
+                if (validListingCollection) {
+                  void validateSingleNft(validListingCollection, setListingCollectionMetadata, setListingCollectionError);
+                }
+              }}
+              style={{ flex: 1, minWidth: 260 }}
+            />
+            <button type="button" onClick={() => setShowListingCollectionPicker(true)} disabled={busy}>
+              Pick NFT
+            </button>
+          </div>
           <p className="cm-hint">{formatNftLabel(listingCollectionMetadata, listingCollectionInput, !!validListingCollection, listingCollectionError)}</p>
 
           <label htmlFor="listing-token-id">Token ID</label>
@@ -1023,25 +1177,31 @@ function NFTOrderbookView() {
           </select>
 
           <label htmlFor="listing-payment-token">Payment Token {listingPaymentType === 0 ? '(ERC20)' : '(NFT Collection)'}</label>
-          <input
-            id="listing-payment-token"
-            placeholder="0x..."
-            value={listingPaymentTokenInput}
-            onChange={(event) => {
-              setListingPaymentTokenInput(event.target.value.trim());
-              setListingPaymentTokenMetadata(null);
-              setListingPaymentCollectionMetadata(null);
-              setListingPaymentError(false);
-            }}
-            onBlur={() => {
-              if (!validListingPaymentToken) return;
-              if (listingPaymentType === 0) {
-                void validateSingleToken(validListingPaymentToken, setListingPaymentTokenMetadata, setListingPaymentError);
-              } else {
-                void validateSingleNft(validListingPaymentToken, setListingPaymentCollectionMetadata, setListingPaymentError);
-              }
-            }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              id="listing-payment-token"
+              placeholder="0x..."
+              value={listingPaymentTokenInput}
+              onChange={(event) => {
+                setListingPaymentTokenInput(event.target.value.trim());
+                setListingPaymentTokenMetadata(null);
+                setListingPaymentCollectionMetadata(null);
+                setListingPaymentError(false);
+              }}
+              onBlur={() => {
+                if (!validListingPaymentToken) return;
+                if (listingPaymentType === 0) {
+                  void validateSingleToken(validListingPaymentToken, setListingPaymentTokenMetadata, setListingPaymentError);
+                } else {
+                  void validateSingleNft(validListingPaymentToken, setListingPaymentCollectionMetadata, setListingPaymentError);
+                }
+              }}
+              style={{ flex: 1, minWidth: 260 }}
+            />
+            <button type="button" onClick={() => setShowListingPaymentTokenPicker(true)} disabled={busy}>
+              Pick {listingPaymentType === 0 ? 'token' : 'NFT'}
+            </button>
+          </div>
           <p className="cm-hint">
             {listingPaymentType === 0
               ? formatTokenLabel(listingPaymentTokenMetadata, listingPaymentTokenInput, !!validListingPaymentToken, listingPaymentError)
@@ -1090,21 +1250,27 @@ function NFTOrderbookView() {
           <h3>Create NFT Offer</h3>
 
           <label htmlFor="offer-collection">NFT Collection Address</label>
-          <input
-            id="offer-collection"
-            placeholder="0x..."
-            value={offerCollectionInput}
-            onChange={(event) => {
-              setOfferCollectionInput(event.target.value.trim());
-              setOfferCollectionMetadata(null);
-              setOfferCollectionError(false);
-            }}
-            onBlur={() => {
-              if (validOfferCollection) {
-                void validateSingleNft(validOfferCollection, setOfferCollectionMetadata, setOfferCollectionError);
-              }
-            }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              id="offer-collection"
+              placeholder="0x..."
+              value={offerCollectionInput}
+              onChange={(event) => {
+                setOfferCollectionInput(event.target.value.trim());
+                setOfferCollectionMetadata(null);
+                setOfferCollectionError(false);
+              }}
+              onBlur={() => {
+                if (validOfferCollection) {
+                  void validateSingleNft(validOfferCollection, setOfferCollectionMetadata, setOfferCollectionError);
+                }
+              }}
+              style={{ flex: 1, minWidth: 260 }}
+            />
+            <button type="button" onClick={() => setShowOfferCollectionPicker(true)} disabled={busy}>
+              Pick NFT
+            </button>
+          </div>
           <p className="cm-hint">{formatNftLabel(offerCollectionMetadata, offerCollectionInput, !!validOfferCollection, offerCollectionError)}</p>
 
           <label htmlFor="offer-token-id">Token ID</label>
@@ -1137,25 +1303,31 @@ function NFTOrderbookView() {
           </select>
 
           <label htmlFor="offer-token">Offer Token {offerType === 0 ? '(ERC20)' : '(NFT Collection)'}</label>
-          <input
-            id="offer-token"
-            placeholder="0x..."
-            value={offerTokenInput}
-            onChange={(event) => {
-              setOfferTokenInput(event.target.value.trim());
-              setOfferTokenMetadata(null);
-              setOfferTokenCollectionMetadata(null);
-              setOfferTokenError(false);
-            }}
-            onBlur={() => {
-              if (!validOfferToken) return;
-              if (offerType === 0) {
-                void validateSingleToken(validOfferToken, setOfferTokenMetadata, setOfferTokenError);
-              } else {
-                void validateSingleNft(validOfferToken, setOfferTokenCollectionMetadata, setOfferTokenError);
-              }
-            }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              id="offer-token"
+              placeholder="0x..."
+              value={offerTokenInput}
+              onChange={(event) => {
+                setOfferTokenInput(event.target.value.trim());
+                setOfferTokenMetadata(null);
+                setOfferTokenCollectionMetadata(null);
+                setOfferTokenError(false);
+              }}
+              onBlur={() => {
+                if (!validOfferToken) return;
+                if (offerType === 0) {
+                  void validateSingleToken(validOfferToken, setOfferTokenMetadata, setOfferTokenError);
+                } else {
+                  void validateSingleNft(validOfferToken, setOfferTokenCollectionMetadata, setOfferTokenError);
+                }
+              }}
+              style={{ flex: 1, minWidth: 260 }}
+            />
+            <button type="button" onClick={() => setShowOfferTokenPicker(true)} disabled={busy}>
+              Pick {offerType === 0 ? 'token' : 'NFT'}
+            </button>
+          </div>
           <p className="cm-hint">
             {offerType === 0
               ? formatTokenLabel(offerTokenMetadata, offerTokenInput, !!validOfferToken, offerTokenError)
@@ -1204,6 +1376,13 @@ function NFTOrderbookView() {
           <p className="cm-tx-hash">{lastCommitHash}</p>
         </div>
       ) : null}
+
+      {showListingCollectionPicker ? <NFTCollectionPicker onSelect={handleListingCollectionSelect} onClose={() => setShowListingCollectionPicker(false)} /> : null}
+      {showListingPaymentTokenPicker && listingPaymentType === 0 ? <TokenPicker onSelect={handleListingPaymentTokenSelect} onClose={() => setShowListingPaymentTokenPicker(false)} /> : null}
+      {showListingPaymentTokenPicker && listingPaymentType === 1 ? <NFTCollectionPicker onSelect={handleListingPaymentCollectionSelect} onClose={() => setShowListingPaymentTokenPicker(false)} /> : null}
+      {showOfferCollectionPicker ? <NFTCollectionPicker onSelect={handleOfferCollectionSelect} onClose={() => setShowOfferCollectionPicker(false)} /> : null}
+      {showOfferTokenPicker && offerType === 0 ? <TokenPicker onSelect={handleOfferTokenSelect} onClose={() => setShowOfferTokenPicker(false)} /> : null}
+      {showOfferTokenPicker && offerType === 1 ? <NFTCollectionPicker onSelect={handleOfferTokenCollectionSelect} onClose={() => setShowOfferTokenPicker(false)} /> : null}
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
     </section>

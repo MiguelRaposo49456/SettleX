@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { decodeEventLog, encodePacked, isAddress, keccak256, parseUnits } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
+import TokenPicker from '../components/TokenPicker';
 import { FUNGIBLE_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts.js';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation.js';
 
@@ -79,6 +80,10 @@ function FungibleOrderbookView() {
   const [tokenMetadataByAddress, setTokenMetadataByAddress] = useState<Record<string, TokenMetadata | null>>({});
   const [pendingCancel, setPendingCancel] = useState<bigint | null>(null);
   const [pendingTake, setPendingTake] = useState<bigint | null>(null);
+  const [showTokenInPicker, setShowTokenInPicker] = useState(false);
+  const [showTokenOutPicker, setShowTokenOutPicker] = useState(false);
+  const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  const [showMyOrdersOnly, setShowMyOrdersOnly] = useState(false);
 
   const validTokenIn = useMemo(
     () => (isAddress(tokenInInput) ? (tokenInInput as `0x${string}`) : undefined),
@@ -98,6 +103,37 @@ function FungibleOrderbookView() {
     amountOutInput.trim() &&
     !busy,
   );
+
+  const filteredOrders = useMemo(() => {
+    let result = orders;
+    if (showMyOrdersOnly && address) {
+      result = result.filter((o) => o.client.toLowerCase() === address.toLowerCase());
+    }
+    if (orderSearchQuery.trim()) {
+      const q = orderSearchQuery.trim().toLowerCase();
+      result = result.filter((o) => {
+        const orderId = o.orderId.toString().toLowerCase();
+        const tokenInMeta = tokenMetadataByAddress[o.tokenIn.toLowerCase()];
+        const tokenOutMeta = tokenMetadataByAddress[o.tokenOut.toLowerCase()];
+        const tokenInSymbol = tokenInMeta?.symbol.toLowerCase() || '';
+        const tokenInName = tokenInMeta?.name.toLowerCase() || '';
+        const tokenOutSymbol = tokenOutMeta?.symbol.toLowerCase() || '';
+        const tokenOutName = tokenOutMeta?.name.toLowerCase() || '';
+        const tokenInAddr = o.tokenIn.toLowerCase();
+        const tokenOutAddr = o.tokenOut.toLowerCase();
+        return (
+          orderId.includes(q) ||
+          tokenInSymbol.includes(q) ||
+          tokenInName.includes(q) ||
+          tokenInAddr.includes(q) ||
+          tokenOutSymbol.includes(q) ||
+          tokenOutName.includes(q) ||
+          tokenOutAddr.includes(q)
+        );
+      });
+    }
+    return result;
+  }, [orders, orderSearchQuery, showMyOrdersOnly, address, tokenMetadataByAddress]);
 
   const validateSingleToken = async (
     tokenAddress: `0x${string}`,
@@ -152,6 +188,20 @@ function FungibleOrderbookView() {
     setTokenOutMetadata(tokenOut);
 
     return { tokenIn, tokenOut };
+  };
+
+  const handleTokenInSelect = (token: TokenMetadata) => {
+    setTokenInInput(token.address);
+    setTokenInMetadata(token);
+    setTokenInError(false);
+    setShowTokenInPicker(false);
+  };
+
+  const handleTokenOutSelect = (token: TokenMetadata) => {
+    setTokenOutInput(token.address);
+    setTokenOutMetadata(token);
+    setTokenOutError(false);
+    setShowTokenOutPicker(false);
   };
 
   const refreshOrders = async () => {
@@ -497,13 +547,30 @@ function FungibleOrderbookView() {
 
       <div className="cm-block">
         <h3>Orderbook</h3>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            type="text"
+            placeholder="Search by order ID, token symbol, or address..."
+            value={orderSearchQuery}
+            onChange={(e) => setOrderSearchQuery(e.target.value)}
+            style={{ flex: 1, minWidth: 220, padding: '6px 8px' }}
+          />
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={showMyOrdersOnly}
+              onChange={(e) => setShowMyOrdersOnly(e.target.checked)}
+            />
+            My Orders Only
+          </label>
+        </div>
         {ordersLoading ? (
           <p className="cm-hint">Loading orders...</p>
-        ) : orders.length === 0 ? (
-          <p className="cm-hint">No orders submitted yet.</p>
+        ) : filteredOrders.length === 0 ? (
+          <p className="cm-hint">{orders.length === 0 ? 'No orders submitted yet.' : 'No orders match your filters.'}</p>
         ) : (
           <div style={{ display: 'grid', gap: 12 }}>
-            {orders.filter((order) => order.status !== 0).map((order) => {
+            {filteredOrders.filter((order) => order.status !== 0).map((order) => {
               const tokenInMeta = tokenMetadataByAddress[order.tokenIn.toLowerCase()] ?? null;
               const tokenOutMeta = tokenMetadataByAddress[order.tokenOut.toLowerCase()] ?? null;
               const normalizedIsTokenIn = order.tokenIn.toLowerCase() < order.tokenOut.toLowerCase();
@@ -597,23 +664,35 @@ function FungibleOrderbookView() {
       <div className="cm-block">
         <h3>Submit Order</h3>
         <label htmlFor="token-in">Token In</label>
-        <input
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
             id="token-in"
             placeholder="0x..."
             value={tokenInInput}
             onChange={(event) => { setTokenInInput(event.target.value.trim()); setTokenInMetadata(null); setTokenInError(false); }}
             onBlur={() => { if (validTokenIn) validateSingleToken(validTokenIn, setTokenInMetadata, setTokenInError); }}
-        />
+            style={{ flex: 1, minWidth: 260 }}
+          />
+          <button type="button" onClick={() => setShowTokenInPicker(true)} disabled={busy}>
+            Pick token
+          </button>
+        </div>
         <p className="cm-hint">{formatAddressLabel(tokenInMetadata, tokenInInput, !!validTokenIn, tokenInError)}</p>
 
         <label htmlFor="token-out">Token Out</label>
-        <input
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
             id="token-out"
             placeholder="0x..."
             value={tokenOutInput}
             onChange={(event) => { setTokenOutInput(event.target.value.trim()); setTokenOutMetadata(null); setTokenOutError(false); }}
             onBlur={() => { if (validTokenOut) validateSingleToken(validTokenOut, setTokenOutMetadata, setTokenOutError); }}
-        />
+            style={{ flex: 1, minWidth: 260 }}
+          />
+          <button type="button" onClick={() => setShowTokenOutPicker(true)} disabled={busy}>
+            Pick token
+          </button>
+        </div>
         <p className="cm-hint">{formatAddressLabel(tokenOutMetadata, tokenOutInput, !!validTokenOut, tokenOutError)}</p>
         <label htmlFor="amount-in">Amount In</label>
         <input
@@ -679,6 +758,9 @@ function FungibleOrderbookView() {
           <p className="cm-tx-hash">{lastRevealHash}</p>
         </div>
       ) : null}
+
+      {showTokenInPicker ? <TokenPicker onSelect={handleTokenInSelect} onClose={() => setShowTokenInPicker(false)} /> : null}
+      {showTokenOutPicker ? <TokenPicker onSelect={handleTokenOutSelect} onClose={() => setShowTokenOutPicker(false)} /> : null}
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
 
