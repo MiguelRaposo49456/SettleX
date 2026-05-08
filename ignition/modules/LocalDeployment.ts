@@ -6,6 +6,7 @@ export default buildModule("LocalDeployment", (m) => {
   const tokenA = m.contract("MockERC20", ["Token A", "TKNA", 18], { id: "TokenA" });
   const tokenB = m.contract("MockERC20", ["Token B", "TKNB", 18], { id: "TokenB" });
   const mockNFT = m.contract("MockERC721", ["Big NFT", "BNFT"], { id: "BigNFT" });
+  const anotherMockNFT = m.contract("MockERC721", ["WOW NFT", "WNFT"], { id: "WOWNFT" });
 
   // 2. DEPLOY INFRASTRUCTURE
   const lendingPool = m.contract("MockLendingPool");
@@ -48,6 +49,7 @@ export default buildModule("LocalDeployment", (m) => {
   // Mint NFTs to test account
   m.call(mockNFT, "mint", [m.getAccount(1), BigInt(1)], { id: "MintNFT1" });
   m.call(mockNFT, "mint", [m.getAccount(1), BigInt(2)], { id: "MintNFT2" });
+  m.call(anotherMockNFT, "mint", [m.getAccount(0), BigInt(1)], { id: "MintAnotherNFT1" });
 
   // Approve the LendingPool to take the tokens
   const approveWeth = m.call(mockWeth, "approve", [lendingPool, liquidityAmount], { id: "ApproveWeth", after: [depositWeth] });
@@ -59,6 +61,6 @@ export default buildModule("LocalDeployment", (m) => {
 
   return { 
     compliance, lendingPool, custodian, fungibleOrderbook, nftOrderbook, 
-    settlementEngine, mockWeth, tokenA, tokenB, mockNFT
+    settlementEngine, mockWeth, tokenA, tokenB, mockNFT, anotherMockNFT
   };
 });

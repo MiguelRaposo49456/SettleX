@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { decodeEventLog, encodePacked, isAddress, keccak256, parseUnits } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
-import { FUNGIBLE_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
-import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation';
+import { FUNGIBLE_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts.js';
+import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation.js';
 
 const ORDER_SIDE_OPTIONS = [
   { value: 0, label: 'Buy' },
@@ -20,7 +20,7 @@ function formatAddressLabel(metadata: TokenMetadata | null, input: string, isVal
   if (!isValid) return '⚠ Invalid address';
   if (fetchError) return '⚠ Not a valid ERC20 token';
   if (metadata) return `✓ ${metadata.symbol} — ${metadata.name} (${metadata.decimals} decimals)`;
-  return 'Fetching token info...';
+  return 'Address looks valid. Click away to validate token metadata.';
 }
 
 type OrderRecord = {
@@ -55,7 +55,7 @@ function formatAmount(value: bigint, decimals: number) {
   return `${negative ? '-' : ''}${whole.toString()}.${fractionText}`;
 }
 
-function OrderbookView() {
+function FungibleOrderbookView() {
   const { address } = useAccount();
   const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient();
@@ -686,4 +686,4 @@ function OrderbookView() {
   );
 }
 
-export default OrderbookView;
+export default FungibleOrderbookView;

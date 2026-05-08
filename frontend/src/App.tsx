@@ -3,14 +3,16 @@ import { useAccount } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import ComplianceManagerView from './views/ComplianceManagerView';
 import CustodianView from './views/CustodianView';
-import OrderbookView from './views/OrderbookView';
+import FungibleOrderbookView from './views/FungibleOrderbookView';
+import NFTOrderbookView from './views/NFTOrderbookView';
 import './App.css';
 
-type ViewId = 'compliance' | 'custodian' | 'orderbook';
+type ViewId = 'compliance' | 'fungible-orderbook' | 'nft-orderbook' | 'custodian';
 
 const VIEWS: Array<{ id: ViewId; label: string }> = [
   { id: 'compliance', label: 'Compliance Manager' },
-  { id: 'orderbook', label: 'Orderbook' },
+  { id: 'fungible-orderbook', label: 'Fungible Orderbook' },
+  { id: 'nft-orderbook', label: 'NFT Orderbook' },
   { id: 'custodian', label: 'Custodian' },
 ];
 
@@ -57,8 +59,11 @@ function App() {
             <section hidden={activeView !== 'compliance'}>
               <ComplianceManagerView />
             </section>
-            <section hidden={activeView !== 'orderbook'}>
-              <OrderbookView />
+            <section hidden={activeView !== 'fungible-orderbook'}>
+              <FungibleOrderbookView />
+            </section>
+            <section hidden={activeView !== 'nft-orderbook'}>
+              <NFTOrderbookView />
             </section>
             <section hidden={activeView !== 'custodian'}>
               <CustodianView />
