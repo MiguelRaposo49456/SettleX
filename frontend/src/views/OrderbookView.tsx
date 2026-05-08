@@ -257,6 +257,12 @@ function OrderbookView() {
     void refreshOrders();
   }, [publicClient, lastRevealHash]);
 
+  useEffect(() => {
+    const handler = () => void refreshOrders();
+    window.addEventListener('settlementCompleted', handler);
+    return () => window.removeEventListener('settlementCompleted', handler);
+  }, []);
+
   const submitOrder = async () => {
     if (!address) {
       setFeedback('Connect your wallet first.');

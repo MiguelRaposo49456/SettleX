@@ -37,7 +37,7 @@ function ComplianceManagerView() {
   
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [settlementLoaded, setSettlementLoaded] = useState(false);
-  
+  const [trackedBatchId, setTrackedBatchId] = useState<number | null>(null);
 
   const validTokenAddress = useMemo(
     () => (isAddress(tokenAddressInput) ? (tokenAddressInput as `0x${string}`) : undefined),
@@ -384,7 +384,7 @@ function ComplianceManagerView() {
     if (!publicClient) return;
 
     try {
-      // Read settlement window and batchOpenedAt from contract
+      // Read settlement window, batchOpenedAt, and current batch ID from contract
       const window = (await publicClient.readContract({
         ...SETTLEMENT_ENGINE_CONTRACT,
         functionName: 'settlementWindowSeconds',
@@ -393,6 +393,11 @@ function ComplianceManagerView() {
       const openedAt = (await publicClient.readContract({
         ...SETTLEMENT_ENGINE_CONTRACT,
         functionName: 'batchOpenedAt',
+      })) as bigint;
+
+      const currentBatchId = (await publicClient.readContract({
+        ...SETTLEMENT_ENGINE_CONTRACT,
+        functionName: 'currentBatchId',
       })) as bigint;
 
       // Contract's helper that returns time remaining (may use block.timestamp internally)
@@ -406,17 +411,26 @@ function ComplianceManagerView() {
       const blockTs = Number(latestBlock.timestamp ?? 0n);
 
       const computedRemaining = Math.max(0, Number(openedAt) + Number(window) - blockTs);
+      const batchIdNum = Number(currentBatchId);
 
       setSettlementWindow(Number(window));
-      // Resync client countdown: only adjust downward to avoid fetch resetting it upward
-      setCountdownSeconds((prev) => {
-        if (prev === null) return computedRemaining;
-        // If on-chain/computed remaining is significantly smaller, resync downward
-        if (computedRemaining < prev - 1) return computedRemaining;
-        // Otherwise keep the current ticking value to avoid pushes back in time
-        return prev;
-      });
-      
+
+      // Check if batch ID changed (new batch opened after settlement)
+      if (trackedBatchId !== null && batchIdNum !== trackedBatchId) {
+        // Batch rolled over, reset countdown to the fresh window
+        setCountdownSeconds(computedRemaining);
+      } else {
+        // Same batch, only resync downward to avoid upward jumps
+        setCountdownSeconds((prev) => {
+          if (prev === null) return computedRemaining;
+          // If on-chain/computed remaining is significantly smaller, resync downward
+          if (computedRemaining < prev - 1) return computedRemaining;
+          // Otherwise keep the current ticking value to avoid pushes back in time
+          return prev;
+        });
+      }
+
+      setTrackedBatchId(batchIdNum);
       setSettlementLoaded(true);
 
       // Log fetch for debugging
@@ -424,6 +438,7 @@ function ComplianceManagerView() {
       console.debug('fetchSettlementInfo', {
         window: Number(window),
         openedAt: Number(openedAt),
+        currentBatchId: batchIdNum,
         contractTimeRemaining: Number(timeRemaining),
         computedRemaining,
         blockNumber: Number(latestBlock.number ?? 0n),
@@ -433,7 +448,7 @@ function ComplianceManagerView() {
     } catch (err) {
       console.warn('Failed to fetch settlement info', err);
     }
-  }, [publicClient]);
+  }, [publicClient, trackedBatchId]);
 
   useEffect(() => {
     void fetchSettlementInfo();
@@ -491,6 +506,7 @@ function ComplianceManagerView() {
         }),
       'Batch settled successfully.',
     ).then(() => {
+      window.dispatchEvent(new CustomEvent('settlementCompleted'));
       void fetchSettlementInfo();
     });
   };
