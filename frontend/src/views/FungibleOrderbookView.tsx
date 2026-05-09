@@ -546,7 +546,12 @@ function FungibleOrderbookView() {
       </header>
 
       <div className="cm-block">
-        <h3>Orderbook</h3>
+        <div className="cm-actions-row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>Orderbook</h3>
+        <button type="button" onClick={() => void refreshOrders()} disabled={ordersLoading || busy}>
+          {ordersLoading ? 'Refreshing...' : 'Refresh'}
+        </button>
+      </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <input
             type="text"
@@ -569,7 +574,7 @@ function FungibleOrderbookView() {
         ) : filteredOrders.length === 0 ? (
           <p className="cm-hint">{orders.length === 0 ? 'No orders submitted yet.' : 'No orders match your filters.'}</p>
         ) : (
-          <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gap: 12, maxHeight: 480, overflowY: 'auto', paddingRight: 4 }}>
             {filteredOrders.filter((order) => order.status !== 0).map((order) => {
               const tokenInMeta = tokenMetadataByAddress[order.tokenIn.toLowerCase()] ?? null;
               const tokenOutMeta = tokenMetadataByAddress[order.tokenOut.toLowerCase()] ?? null;

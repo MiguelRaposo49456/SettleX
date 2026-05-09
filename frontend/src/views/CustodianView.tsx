@@ -19,6 +19,14 @@ function showContractError(error: unknown, fallbackMessage: string, presentError
   presentError(message);
 }
 
+const CUSTODIAN_TABS = [
+  { id: 'eth', label: 'ETH' },
+  { id: 'erc20', label: 'ERC20' },
+  { id: 'nft', label: 'NFT' },
+] as const;
+
+type CustodianTab = 'eth' | 'erc20' | 'nft';
+
 function CustodianView() {
   const { address } = useAccount();
   const { writeContractAsync } = useWriteContract();
@@ -50,6 +58,7 @@ function CustodianView() {
   const [withdrawNftFeedback, setWithdrawNftFeedback] = useState('');
   const [errorModalMessage, setErrorModalMessage] = useState('');
   const [showErrorModal, setShowErrorModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<CustodianTab>('eth');
 
   void feedback;
   void tokenFeedback;
@@ -539,13 +548,13 @@ function CustodianView() {
           <span>Your deposited ETH</span>
           <strong>{depositedEth} ETH</strong>
         </div>
-        {selectedToken ? (
+        {activeTab === 'erc20' && selectedToken ? (
           <div className="cm-status-card">
             <span>Your deposited {selectedToken.symbol}</span>
             <strong>{depositedToken} {selectedToken.symbol}</strong>
           </div>
         ) : null}
-          {selectedNftCollection && parsedNftTokenId !== undefined ? (
+          {activeTab === 'nft' && selectedNftCollection && parsedNftTokenId !== undefined ? (
             <div className="cm-status-card">
               <span>NFT deposited?</span>
               <strong>{nftHeld ? 'Yes' : 'No'}</strong>
@@ -553,198 +562,206 @@ function CustodianView() {
           ) : null}
       </div>
 
-      <div className="cm-block">
-        <h3>Deposit ETH</h3>
-        <label htmlFor="eth-amount">Amount</label>
-        <input
-          id="eth-amount"
-          placeholder="0.1"
-          value={ethAmount}
-          onChange={(event) => setEthAmount(event.target.value.trim())}
-        />
-        <div className="cm-actions-row">
-          <button onClick={depositEth} disabled={busyAction || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !canDepositEth}>
-            Deposit ETH
+      <nav className="section-tabs" style={{ marginBottom: 16 }}>
+        {CUSTODIAN_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={activeTab === tab.id ? 'active' : ''}
+            onClick={() => setActiveTab(tab.id)}
+            aria-pressed={activeTab === tab.id}
+          >
+            {tab.label}
           </button>
-        </div>
-      </div>
+        ))}
+      </nav>
 
-      <div className="cm-block">
-        <h3>Withdraw ETH</h3>
-        <label htmlFor="withdraw-eth-amount">Amount</label>
-        <input
-          id="withdraw-eth-amount"
-          placeholder="0.1"
-          value={withdrawEthAmount}
-          disabled={withdrawAllEth}
-          onChange={(event) => setWithdrawEthAmount(event.target.value.trim())}
-        />
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input
-            type="checkbox"
-            checked={withdrawAllEth}
-            onChange={(event) => setWithdrawAllEth(event.target.checked)}
-          />
-          Withdraw all ETH
-        </label>
-        <div className="cm-actions-row">
-          <button onClick={withdrawEth} disabled={withdrawEthBusy || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !canWithdrawEth}>
-            {withdrawAllEth ? 'Withdraw all ETH' : 'Withdraw ETH'}
-          </button>
-        </div>
-      </div>
-
-      <div className="cm-block">
-        <h3>Deposit ERC20</h3>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <div>
-            <label>Token</label>
-            <div>
-              {selectedToken ? (
-                <div>
-                  <strong>{selectedToken.name} ({selectedToken.symbol})</strong>
-                  <button onClick={() => setSelectedToken(null)}>Change</button>
-                </div>
-              ) : (
-                <button onClick={() => setShowPicker(true)}>Pick token</button>
-              )}
+      {activeTab === 'eth' && (
+        <>
+          <div className="cm-block">
+            <h3>Deposit ETH</h3>
+            <label htmlFor="eth-amount">Amount</label>
+            <input
+              id="eth-amount"
+              placeholder="0.1"
+              value={ethAmount}
+              onChange={(event) => setEthAmount(event.target.value.trim())}
+            />
+            <div className="cm-actions-row">
+              <button onClick={depositEth} disabled={busyAction || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !canDepositEth}>
+                Deposit ETH
+              </button>
             </div>
-            {selectedToken ? (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ padding: 8, borderRadius: 6, background: '#f6f8fa' }}>
-                  <strong>Deposited:</strong> {depositedToken} {selectedToken.symbol}
+          </div>
+
+          <div className="cm-block">
+            <h3>Withdraw ETH</h3>
+            <label htmlFor="withdraw-eth-amount">Amount</label>
+            <input
+              id="withdraw-eth-amount"
+              placeholder="0.1"
+              value={withdrawEthAmount}
+              disabled={withdrawAllEth}
+              onChange={(event) => setWithdrawEthAmount(event.target.value.trim())}
+            />
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <input
+                type="checkbox"
+                checked={withdrawAllEth}
+                onChange={(event) => setWithdrawAllEth(event.target.checked)}
+              />
+              Withdraw all ETH
+            </label>
+            <div className="cm-actions-row">
+              <button onClick={withdrawEth} disabled={withdrawEthBusy || !address || !(isInitialized as boolean) || !(userAllowed as boolean) || !canWithdrawEth}>
+                {withdrawAllEth ? 'Withdraw all ETH' : 'Withdraw ETH'}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {activeTab === 'erc20' && (
+        <>
+          <div className="cm-block">
+            <h3>Deposit ERC20</h3>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div>
+                <label>Token</label>
+                <div>
+                  {selectedToken ? (
+                    <div>
+                      <strong>{selectedToken.name} ({selectedToken.symbol})</strong>
+                      <button onClick={() => setSelectedToken(null)}>Change</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowPicker(true)}>Pick token</button>
+                  )}
                 </div>
               </div>
-            ) : null}
-          </div>
-
-          <div>
-            <label>Amount</label>
-            <input value={tokenAmount} onChange={(e) => setTokenAmount(e.target.value.trim())} placeholder="100" />
-          </div>
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <label>Custom token address</label>
-          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-            <input placeholder="0x..." value={customAddr} onChange={(e) => setCustomAddr(e.target.value.trim())} style={{ flex: 1 }} />
-            <button onClick={submitCustomToken} disabled={tokenBusy || !customAddr}>Validate & Use</button>
-          </div>
-        </div>
-        <div className="cm-actions-row">
-          <button onClick={depositErc20} disabled={tokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !canDepositToken}>
-            Approve & Deposit
-          </button>
-        </div>
-      </div>
-
-      <div className="cm-block">
-        <h3>Withdraw ERC20</h3>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <div>
-            <label>Token</label>
-            <div>
-              {selectedToken ? (
-                <div>
-                  <strong>{selectedToken.name} ({selectedToken.symbol})</strong>
-                  <button onClick={() => setSelectedToken(null)}>Change</button>
-                </div>
-              ) : (
-                <button onClick={() => setShowPicker(true)}>Pick token</button>
-              )}
+              <div>
+                <label>Amount</label>
+                <input value={tokenAmount} onChange={(e) => setTokenAmount(e.target.value.trim())} placeholder="100" />
+              </div>
             </div>
-            {selectedToken ? (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ padding: 8, borderRadius: 6, background: '#f6f8fa' }}>
-                  <strong>Available:</strong> {depositedToken} {selectedToken.symbol}
+            <div style={{ marginTop: 8 }}>
+              <label>Custom token address</label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <input placeholder="0x..." value={customAddr} onChange={(e) => setCustomAddr(e.target.value.trim())} style={{ flex: 1 }} />
+                <button onClick={submitCustomToken} disabled={tokenBusy || !customAddr}>Validate & Use</button>
+              </div>
+            </div>
+            <div className="cm-actions-row">
+              <button onClick={depositErc20} disabled={tokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !canDepositToken}>
+                Approve & Deposit
+              </button>
+            </div>
+          </div>
+
+          <div className="cm-block">
+            <h3>Withdraw ERC20</h3>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div>
+                <label>Token</label>
+                <div>
+                  {selectedToken ? (
+                    <div>
+                      <strong>{selectedToken.name} ({selectedToken.symbol})</strong>
+                      <button onClick={() => setSelectedToken(null)}>Change</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowPicker(true)}>Pick token</button>
+                  )}
                 </div>
               </div>
-            ) : null}
+              <div>
+                <label>Amount</label>
+                <input value={withdrawTokenAmount} disabled={withdrawAllToken} onChange={(e) => setWithdrawTokenAmount(e.target.value.trim())} placeholder="100" />
+              </div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <input
+                type="checkbox"
+                checked={withdrawAllToken}
+                onChange={(event) => setWithdrawAllToken(event.target.checked)}
+              />
+              Withdraw all {selectedToken ? selectedToken.symbol : 'token'}
+            </label>
+            <div className="cm-actions-row">
+              <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !canWithdrawToken}>
+                {withdrawAllToken ? 'Withdraw all ERC20' : 'Withdraw ERC20'}
+              </button>
+            </div>
           </div>
+        </>
+      )}
 
-          <div>
-            <label>Amount</label>
-            <input value={withdrawTokenAmount} disabled={withdrawAllToken} onChange={(e) => setWithdrawTokenAmount(e.target.value.trim())} placeholder="100" />
-          </div>
-        </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input
-            type="checkbox"
-            checked={withdrawAllToken}
-            onChange={(event) => setWithdrawAllToken(event.target.checked)}
-          />
-          Withdraw all {selectedToken ? selectedToken.symbol : 'token'}
-        </label>
-        <div className="cm-actions-row">
-          <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !canWithdrawToken}>
-            {withdrawAllToken ? 'Withdraw all ERC20' : 'Withdraw ERC20'}
-          </button>
-        </div>
-      </div>
-
-      <div className="cm-block">
-        <h3>Deposit NFT</h3>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div>
-            <label>Collection</label>
-            <div>
-              {selectedNftCollection ? (
+      {activeTab === 'nft' && (
+        <>
+          <div className="cm-block">
+            <h3>Deposit NFT</h3>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div>
+                <label>Collection</label>
                 <div>
-                  <strong>{selectedNftCollection.name} ({selectedNftCollection.symbol})</strong>
-                  <button onClick={() => setSelectedNftCollection(null)}>Change</button>
+                  {selectedNftCollection ? (
+                    <div>
+                      <strong>{selectedNftCollection.name} ({selectedNftCollection.symbol})</strong>
+                      <button onClick={() => setSelectedNftCollection(null)}>Change</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
+                  )}
                 </div>
-              ) : (
-                <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
-              )}
+              </div>
+              <div>
+                <label>Token ID</label>
+                <input value={nftTokenId} onChange={(event) => setNftTokenId(event.target.value.trim())} placeholder="1" />
+              </div>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <label>Custom NFT collection address</label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <input placeholder="0x..." value={customNftAddr} onChange={(event) => setCustomNftAddr(event.target.value.trim())} style={{ flex: 1 }} />
+                <button onClick={submitCustomNft} disabled={nftBusy || !customNftAddr}>Validate & Use</button>
+              </div>
+            </div>
+            <div className="cm-actions-row">
+              <button onClick={depositNft} disabled={nftBusy || !address || !selectedNftCollection || !nftTokenId || !(isInitialized as boolean) || !(userAllowed as boolean)}>
+                Approve & Deposit NFT
+              </button>
             </div>
           </div>
 
-          <div>
-            <label>Token ID</label>
-            <input value={nftTokenId} onChange={(event) => setNftTokenId(event.target.value.trim())} placeholder="1" />
-          </div>
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <label>Custom NFT collection address</label>
-          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-            <input placeholder="0x..." value={customNftAddr} onChange={(event) => setCustomNftAddr(event.target.value.trim())} style={{ flex: 1 }} />
-            <button onClick={submitCustomNft} disabled={nftBusy || !customNftAddr}>Validate & Use</button>
-          </div>
-        </div>
-        <div className="cm-actions-row">
-          <button onClick={depositNft} disabled={nftBusy || !address || !selectedNftCollection || !nftTokenId || !(isInitialized as boolean) || !(userAllowed as boolean)}>
-            Approve & Deposit NFT
-          </button>
-        </div>
-      </div>
-
-      <div className="cm-block">
-        <h3>Withdraw NFT</h3>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div>
-            <label>Collection</label>
-            <div>
-              {selectedNftCollection ? (
+          <div className="cm-block">
+            <h3>Withdraw NFT</h3>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div>
+                <label>Collection</label>
                 <div>
-                  <strong>{selectedNftCollection.name} ({selectedNftCollection.symbol})</strong>
-                  <button onClick={() => setSelectedNftCollection(null)}>Change</button>
+                  {selectedNftCollection ? (
+                    <div>
+                      <strong>{selectedNftCollection.name} ({selectedNftCollection.symbol})</strong>
+                      <button onClick={() => setSelectedNftCollection(null)}>Change</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
+                  )}
                 </div>
-              ) : (
-                <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
-              )}
+              </div>
+              <div>
+                <label>Token ID</label>
+                <input value={nftTokenId} onChange={(event) => setNftTokenId(event.target.value.trim())} placeholder="1" />
+              </div>
+            </div>
+            <div className="cm-actions-row">
+              <button onClick={withdrawNft} disabled={withdrawNftBusy || !address || !selectedNftCollection || parsedNftTokenId === undefined || !(isInitialized as boolean) || !(userAllowed as boolean) || !nftHeld}>
+                Withdraw NFT
+              </button>
             </div>
           </div>
-
-          <div>
-            <label>Token ID</label>
-            <input value={nftTokenId} onChange={(event) => setNftTokenId(event.target.value.trim())} placeholder="1" />
-          </div>
-        </div>
-        <div className="cm-actions-row">
-          <button onClick={withdrawNft} disabled={withdrawNftBusy || !address || !selectedNftCollection || parsedNftTokenId === undefined || !(isInitialized as boolean) || !(userAllowed as boolean) || !nftHeld}>
-            Withdraw NFT
-          </button>
-        </div>
-      </div>
+        </>
+      )}
 
       {showPicker ? <TokenPicker onSelect={handleTokenSelect} onClose={() => setShowPicker(false)} /> : null}
       {showNftPicker ? <NFTCollectionPicker onSelect={handleNftCollectionSelect} onClose={() => setShowNftPicker(false)} /> : null}

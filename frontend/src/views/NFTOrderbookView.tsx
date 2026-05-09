@@ -3,7 +3,7 @@ import { isAddress, keccak256, encodePacked, decodeEventLog } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
 import TokenPicker from '../components/TokenPicker';
 import NFTCollectionPicker from '../components/NFTCollectionPicker';
-import { NFT_ORDERBOOK_CONTRACT } from '../constants/contracts';
+import { NFT_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation';
 import validateNftCollectionOnchain, { type NFTCollectionMetadata } from '../hooks/useNftValidation';
 
@@ -645,6 +645,29 @@ function NFTOrderbookView() {
       setFeedback('Submitting listing commit...');
 
       const salt = generateSalt();
+      let usedListingCollection = validListingCollection as `0x${string}`;
+      let usedListingPaymentToken = validListingPaymentToken as `0x${string}`;
+      try {
+        if (publicClient) {
+          const aCollection = (await publicClient.readContract({
+            address: LENDING_POOL_CONTRACT.address,
+            abi: LENDING_POOL_CONTRACT.abi,
+            functionName: 'getAToken',
+            args: [validListingCollection],
+          })) as `0x${string}`;
+          if (aCollection && aCollection !== '0x0000000000000000000000000000000000000000') usedListingCollection = aCollection;
+
+          const aPayment = (await publicClient.readContract({
+            address: LENDING_POOL_CONTRACT.address,
+            abi: LENDING_POOL_CONTRACT.abi,
+            functionName: 'getAToken',
+            args: [validListingPaymentToken],
+          })) as `0x${string}`;
+          if (aPayment && aPayment !== '0x0000000000000000000000000000000000000000') usedListingPaymentToken = aPayment;
+        }
+      } catch (err) {
+        console.warn('Failed to resolve aToken addresses for listing, using supplied addresses', err);
+      }
       const paymentAmount = listingPaymentType === 0 ? BigInt(listingPaymentAmount || 0) : 0n;
       const paymentTokenId = listingPaymentType === 1 ? BigInt(listingPaymentTokenId || 0) : 0n;
 
@@ -654,10 +677,10 @@ function NFTOrderbookView() {
           ['address', 'address', 'uint256', 'uint8', 'address', 'uint256', 'uint256', 'bytes32'],
           [
             address as `0x${string}`,
-            validListingCollection as `0x${string}`,
+            usedListingCollection,
             BigInt(listingTokenIdInput),
             listingPaymentType,
-            validListingPaymentToken as `0x${string}`,
+            usedListingPaymentToken,
             paymentAmount,
             paymentTokenId,
             salt,
@@ -707,10 +730,10 @@ function NFTOrderbookView() {
         functionName: 'revealNFTList',
         args: [
           commitId,
-          validListingCollection as `0x${string}`,
+          usedListingCollection,
           BigInt(listingTokenIdInput),
           listingPaymentType,
-          validListingPaymentToken as `0x${string}`,
+          usedListingPaymentToken,
           paymentAmount,
           paymentTokenId,
           salt,
@@ -745,6 +768,29 @@ function NFTOrderbookView() {
       setFeedback('Submitting offer commit...');
 
       const salt = generateSalt();
+      let usedOfferCollection = validOfferCollection as `0x${string}`;
+      let usedOfferToken = validOfferToken as `0x${string}`;
+      try {
+        if (publicClient) {
+          const aCollection = (await publicClient.readContract({
+            address: LENDING_POOL_CONTRACT.address,
+            abi: LENDING_POOL_CONTRACT.abi,
+            functionName: 'getAToken',
+            args: [validOfferCollection],
+          })) as `0x${string}`;
+          if (aCollection && aCollection !== '0x0000000000000000000000000000000000000000') usedOfferCollection = aCollection;
+
+          const aOffer = (await publicClient.readContract({
+            address: LENDING_POOL_CONTRACT.address,
+            abi: LENDING_POOL_CONTRACT.abi,
+            functionName: 'getAToken',
+            args: [validOfferToken],
+          })) as `0x${string}`;
+          if (aOffer && aOffer !== '0x0000000000000000000000000000000000000000') usedOfferToken = aOffer;
+        }
+      } catch (err) {
+        console.warn('Failed to resolve aToken addresses for offer, using supplied addresses', err);
+      }
       const offerAmountValue = offerType === 0 ? BigInt(offerAmount || 0) : 0n;
       const offerTokenIdValue = offerType === 1 ? BigInt(offerTokenId || 0) : 0n;
 
@@ -754,10 +800,10 @@ function NFTOrderbookView() {
           ['address', 'address', 'uint256', 'uint8', 'address', 'uint256', 'uint256', 'bytes32'],
           [
             address as `0x${string}`,
-            validOfferCollection as `0x${string}`,
+            usedOfferCollection,
             BigInt(offerTokenIdInput),
             offerType,
-            validOfferToken as `0x${string}`,
+            usedOfferToken,
             offerAmountValue,
             offerTokenIdValue,
             salt,
@@ -807,10 +853,10 @@ function NFTOrderbookView() {
         functionName: 'revealNFTOffer',
         args: [
           commitId,
-          validOfferCollection as `0x${string}`,
+          usedOfferCollection,
           BigInt(offerTokenIdInput),
           offerType,
-          validOfferToken as `0x${string}`,
+          usedOfferToken,
           offerAmountValue,
           offerTokenIdValue,
           salt,
@@ -920,7 +966,7 @@ function NFTOrderbookView() {
           {matchedPending.length === 0 ? (
             <p className="cm-hint">No matched pairs waiting for settlement.</p>
           ) : (
-            <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'grid', gap: 10, maxHeight: 480, overflowY: 'auto', paddingRight: 4 }}>
               {matchedPending.map((pair) => (
                 <div
                   key={`${pair.listing.listingId.toString()}-${pair.offer.offerId.toString()}`}
@@ -969,7 +1015,7 @@ function NFTOrderbookView() {
         {marketGroups.length === 0 ? (
           <p className="cm-hint">{listings.length === 0 && offers.length === 0 ? 'No active NFT listings or offers found.' : 'No listings/offers match your filters.'}</p>
         ) : (
-          <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gap: 12, maxHeight: 480, overflowY: 'auto', paddingRight: 4 }}>
             {marketGroups.map((group) => (
               <article key={nftKey(group.collection, group.tokenId)} className="cm-tx-box">
                 <p><strong>NFT:</strong> {getAddressDisplay(group.collection, 'nft')} #{group.tokenId.toString()}</p>
