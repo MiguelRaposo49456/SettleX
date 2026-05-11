@@ -542,7 +542,7 @@ function FungibleOrderbookView() {
     <section className="cm-panel">
       <header className="cm-header">
         <h2>Fungible Orderbook</h2>
-        <p>Submit an order with commit-reveal and reveal it one block later.</p>
+        <p>Submit orders for trading fungible tokens while managing the market</p>
       </header>
 
       <div className="cm-block">
@@ -572,7 +572,7 @@ function FungibleOrderbookView() {
         {ordersLoading ? (
           <p className="cm-hint">Loading orders...</p>
         ) : filteredOrders.length === 0 ? (
-          <p className="cm-hint">{orders.length === 0 ? 'No orders submitted yet.' : 'No orders match your filters.'}</p>
+          <p className="cm-hint">{orders.length === 0 ? 'No orders submitted yet' : 'No orders match your filters'}</p>
         ) : (
           <div style={{ display: 'grid', gap: 12, maxHeight: 480, overflowY: 'auto', paddingRight: 4 }}>
             {filteredOrders.filter((order) => order.status !== 0).map((order) => {
@@ -668,7 +668,7 @@ function FungibleOrderbookView() {
 
       <div className="cm-block">
         <h3>Submit Order</h3>
-        <label htmlFor="token-in">Token In</label>
+        <label htmlFor="token-in">Token to receive</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <input
             id="token-in"
@@ -684,7 +684,7 @@ function FungibleOrderbookView() {
         </div>
         <p className="cm-hint">{formatAddressLabel(tokenInMetadata, tokenInInput, !!validTokenIn, tokenInError)}</p>
 
-        <label htmlFor="token-out">Token Out</label>
+        <label htmlFor="token-out">Token to give</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <input
             id="token-out"
@@ -699,7 +699,7 @@ function FungibleOrderbookView() {
           </button>
         </div>
         <p className="cm-hint">{formatAddressLabel(tokenOutMetadata, tokenOutInput, !!validTokenOut, tokenOutError)}</p>
-        <label htmlFor="amount-in">Amount In</label>
+        <label htmlFor="amount-in">Amount to receive</label>
         <input
           id="amount-in"
           type="number"
@@ -710,7 +710,7 @@ function FungibleOrderbookView() {
           step="0.01"
         />
 
-        <label htmlFor="amount-out">Amount Out</label>
+        <label htmlFor="amount-out">Amount to give</label>
         <input
           id="amount-out"
           type="number"
@@ -746,7 +746,7 @@ function FungibleOrderbookView() {
         </div>
 
         <p className="cm-hint">
-          The frontend will commit your order hash, wait for the next block, then reveal the full order.
+          Upon submitting, your order will be committed on-chain and you will need to wait for one block before revealing it.
         </p>
       </div>
 

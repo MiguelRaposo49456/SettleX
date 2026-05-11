@@ -1,0 +1,56 @@
+.overview-panel {
+  padding: 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.overview-header {
+  margin-bottom: 3rem;
+  text-align: center;
+}
+
+.overview-header h2 {
+  font-size: 2rem;
+  margin: 0 0 0.5rem 0;
+  color: #333;
+}
+
+.overview-header p {
+  font-size: 1rem;
+  color: #666;
+  margin: 0;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 2rem;
+}
+
+.overview-card {
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 1.5rem;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.overview-card:hover {
+  border-color: #ccc;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
+}
+
+.overview-card h3 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  font-size: 1.3rem;
+}
+
+.overview-card p {
+  margin: 0;
+  color: #666;
+  line-height: 1.6;
+  font-size: 0.95rem;
+}

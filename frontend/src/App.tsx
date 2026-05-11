@@ -1,31 +1,48 @@
-﻿import { useState } from 'react';
-import { useAccount } from 'wagmi';
+﻿import { useState, useMemo } from 'react';
+import { useAccount, useReadContract } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import OverviewView from './views/OverviewView';
 import ComplianceManagerView from './views/ComplianceManagerView';
 import CustodianView from './views/CustodianView';
 import FungibleOrderbookView from './views/FungibleOrderbookView';
 import NFTOrderbookView from './views/NFTOrderbookView';
+import { COMPLIANCE_MANAGER_CONTRACT } from './constants/contracts';
 import './App.css';
 
-type ViewId = 'compliance' | 'fungible-orderbook' | 'nft-orderbook' | 'custodian';
+type ViewId = 'overview' | 'custodian' | 'fungible-orderbook' | 'nft-orderbook' | 'compliance';
 
-const VIEWS: Array<{ id: ViewId; label: string }> = [
-  { id: 'compliance', label: 'Compliance Manager' },
+const ALL_VIEWS: Array<{ id: ViewId; label: string }> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'custodian', label: 'Custodian' },
   { id: 'fungible-orderbook', label: 'Fungible Orderbook' },
   { id: 'nft-orderbook', label: 'NFT Orderbook' },
-  { id: 'custodian', label: 'Custodian' },
+  { id: 'compliance', label: 'Compliance Manager' },
 ];
 
 function App() {
   const { address, isConnected } = useAccount();
-  const [activeView, setActiveView] = useState<ViewId>('compliance');
+  const [activeView, setActiveView] = useState<ViewId>('overview');
+
+  const { data: isOperatorRaw } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'hasOperatorRole',
+    args: address ? [address as `0x${string}`] : undefined,
+    query: { enabled: !!address },
+  });
+
+  const isOperator = useMemo(() => Boolean(isOperatorRaw), [isOperatorRaw]);
+
+  const VIEWS = useMemo(
+    () => ALL_VIEWS.filter((view) => view.id !== 'compliance' || isOperator),
+    [isOperator],
+  );
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <h1>Blockchain Trading Frontend</h1>
-          <p>Custodian, orderbooks, and settlement engine.</p>
+          <h1>SettleX</h1>
+          <h2>Trade Fast. Settle Smarter.</h2>
         </div>
         <div className="connect-box">
           <ConnectButton />
@@ -40,7 +57,6 @@ function App() {
           </section>
         ) : (
           <section className="dashboard">
-            <h2>Dashboard</h2>
             <p>Connected address: <code>{address}</code></p>
             <nav className="section-tabs" aria-label="Contract views">
               {VIEWS.map((view) => (
@@ -56,8 +72,11 @@ function App() {
               ))}
             </nav>
 
-            <section hidden={activeView !== 'compliance'}>
-              <ComplianceManagerView />
+            <section hidden={activeView !== 'overview'}>
+              <OverviewView />
+            </section>
+            <section hidden={activeView !== 'custodian'}>
+              <CustodianView />
             </section>
             <section hidden={activeView !== 'fungible-orderbook'}>
               <FungibleOrderbookView />
@@ -65,8 +84,8 @@ function App() {
             <section hidden={activeView !== 'nft-orderbook'}>
               <NFTOrderbookView />
             </section>
-            <section hidden={activeView !== 'custodian'}>
-              <CustodianView />
+            <section hidden={activeView !== 'compliance'}>
+              <ComplianceManagerView />
             </section>
           </section>
         )}

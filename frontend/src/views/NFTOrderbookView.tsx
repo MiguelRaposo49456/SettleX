@@ -946,7 +946,7 @@ function NFTOrderbookView() {
     <section className="cm-panel">
       <header className="cm-header">
         <h2>NFT Orderbook</h2>
-        <p>Create NFT listings and offers with commit-reveal.</p>
+        <p>Trade NFTs through listings and offers</p>
       </header>
 
       <div className="cm-block" style={{ marginTop: 8, marginBottom: 20 }}>
@@ -1013,7 +1013,7 @@ function NFTOrderbookView() {
         </div>
 
         {marketGroups.length === 0 ? (
-          <p className="cm-hint">{listings.length === 0 && offers.length === 0 ? 'No active NFT listings or offers found.' : 'No listings/offers match your filters.'}</p>
+          <p className="cm-hint">{listings.length === 0 && offers.length === 0 ? 'No active NFT listings or offers found' : 'No listings/offers match your filters'}</p>
         ) : (
           <div style={{ display: 'grid', gap: 12, maxHeight: 480, overflowY: 'auto', paddingRight: 4 }}>
             {marketGroups.map((group) => (
@@ -1256,7 +1256,7 @@ function NFTOrderbookView() {
 
           {listingPaymentType === 0 && (
             <>
-              <label htmlFor="listing-payment-amount">Amount (in smallest unit)</label>
+              <label htmlFor="listing-payment-amount">Amount</label>
               <input
                 id="listing-payment-amount"
                 type="number"
@@ -1382,7 +1382,7 @@ function NFTOrderbookView() {
 
           {offerType === 0 && (
             <>
-              <label htmlFor="offer-amount">Amount (in smallest unit)</label>
+              <label htmlFor="offer-amount">Amount</label>
               <input
                 id="offer-amount"
                 type="number"
@@ -1396,7 +1396,7 @@ function NFTOrderbookView() {
 
           {offerType === 1 && (
             <>
-              <label htmlFor="offer-token-id-offered">Your NFT Token ID</label>
+              <label htmlFor="offer-token-id-offered">Offer NFT Token ID</label>
               <input
                 id="offer-token-id-offered"
                 type="number"

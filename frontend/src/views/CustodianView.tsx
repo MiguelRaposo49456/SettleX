@@ -106,6 +106,15 @@ function CustodianView() {
     query: { enabled: !!address },
   });
 
+  const { data: userStatusRaw } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'userStatus',
+    args: address ? [address as `0x${string}`] : undefined,
+    query: { enabled: !!address },
+  });
+
+  const userStatus = Number(userStatusRaw ?? 0);
+
   const { data: aTokenAddressRaw, refetch: refetchAToken } = useReadContract({
     ...LENDING_POOL_CONTRACT,
     functionName: 'getAToken',
@@ -542,7 +551,9 @@ function CustodianView() {
       <div className="cm-status-grid">
         <div className="cm-status-card">
           <span>Your Access</span>
-          <strong>{(userAllowed as boolean) ? '✓ Allowed' : '✗ Not allowed'}</strong>
+          <strong>
+            {userStatus === 0 ? '✓ Allowed' : userStatus === 1 ? '⚠ Can only withdraw' : '✗ Not allowed'}
+          </strong>
         </div>
         <div className="cm-status-card">
           <span>Your deposited ETH</span>
@@ -685,7 +696,7 @@ function CustodianView() {
                 checked={withdrawAllToken}
                 onChange={(event) => setWithdrawAllToken(event.target.checked)}
               />
-              Withdraw all {selectedToken ? selectedToken.symbol : 'token'}
+              Withdraw all {selectedToken ? selectedToken.symbol : ''}
             </label>
             <div className="cm-actions-row">
               <button onClick={withdrawErc20} disabled={withdrawTokenBusy || !address || !selectedToken || !(isInitialized as boolean) || !(userAllowed as boolean) || !canWithdrawToken}>

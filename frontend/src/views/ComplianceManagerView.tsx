@@ -5,6 +5,7 @@ import { usePublicClient } from 'wagmi';
 import { COMPLIANCE_MANAGER_CONTRACT, LENDING_POOL_CONTRACT, SETTLEMENT_ENGINE_CONTRACT } from '../constants/contracts';
 import ATokenABI from '../abis/AToken.json';
 import MockERC20 from '../abis/MockERC20.json';
+import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation';
 
 const USER_STATUS_OPTIONS = [
   { value: 0, label: 'Allowed' },
@@ -12,12 +13,23 @@ const USER_STATUS_OPTIONS = [
   { value: 2, label: 'Blacklisted' },
 ] as const;
 
+type ComplianceFeatureTab = 'core' | 'liquidity' | 'settlement' | 'operators';
+
+function formatAddressLabel(metadata: TokenMetadata | null, input: string, isValid: boolean, fetchError = false) {
+  if (!input) return '';
+  if (!isValid) return '⚠ Invalid address';
+  if (fetchError) return '⚠ Not a valid ERC20 token';
+  if (metadata) return `✓ ${metadata.symbol} - ${metadata.name} (${metadata.decimals} decimals)`;
+  return 'Address looks valid. Click away to validate token metadata.';
+}
+
 function ComplianceManagerView() {
   const { address } = useAccount();
   const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient();
 
   const [tokenAddressInput, setTokenAddressInput] = useState('');
+  const [operatorAddressInput, setOperatorAddressInput] = useState('');
   const [userAddressInput, setUserAddressInput] = useState('');
   const [selectedStatus, setSelectedStatus] = useState<number>(0);
   const [busyAction, setBusyAction] = useState<string>('idle');
@@ -29,6 +41,14 @@ function ComplianceManagerView() {
   const [liquidityAmount, setLiquidityAmount] = useState('');
   const [selectedYieldPoolToken, setSelectedYieldPoolToken] = useState<`0x${string}` | ''>('');
   const [yieldSeconds, setYieldSeconds] = useState('');
+  const [newPoolTokenInput, setNewPoolTokenInput] = useState('');
+  const [newPoolInterestRate, setNewPoolInterestRate] = useState('');
+  const [newPoolName, setNewPoolName] = useState('');
+  const [newPoolSymbol, setNewPoolSymbol] = useState('');
+  const [tokenAddressMetadata, setTokenAddressMetadata] = useState<TokenMetadata | null>(null);
+  const [tokenAddressError, setTokenAddressError] = useState(false);
+  const [newPoolTokenMetadata, setNewPoolTokenMetadata] = useState<TokenMetadata | null>(null);
+  const [newPoolTokenError, setNewPoolTokenError] = useState(false);
   const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
   const [tokenAllowance, setTokenAllowance] = useState<bigint | null>(null);
   const [poolTokenDisplayNames, setPoolTokenDisplayNames] = useState<Record<string, string>>({});
@@ -38,6 +58,7 @@ function ComplianceManagerView() {
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [settlementLoaded, setSettlementLoaded] = useState(false);
   const [trackedBatchId, setTrackedBatchId] = useState<number | null>(null);
+  const [activeFeatureTab, setActiveFeatureTab] = useState<ComplianceFeatureTab>('core');
 
   const validTokenAddress = useMemo(
     () => (isAddress(tokenAddressInput) ? (tokenAddressInput as `0x${string}`) : undefined),
@@ -49,6 +70,16 @@ function ComplianceManagerView() {
     [userAddressInput],
   );
 
+  const validOperatorAddress = useMemo(
+    () => (isAddress(operatorAddressInput) ? (operatorAddressInput as `0x${string}`) : undefined),
+    [operatorAddressInput],
+  );
+
+  const validNewPoolTokenAddress = useMemo(
+    () => (isAddress(newPoolTokenInput) ? (newPoolTokenInput as `0x${string}`) : undefined),
+    [newPoolTokenInput],
+  );
+
   const { data: pausedRaw, refetch: refetchPaused } = useReadContract({
     ...COMPLIANCE_MANAGER_CONTRACT,
     functionName: 'isSystemPaused',
@@ -58,6 +89,28 @@ function ComplianceManagerView() {
     ...COMPLIANCE_MANAGER_CONTRACT,
     functionName: 'hasOperatorRole',
     args: address ? [address as `0x${string}`] : undefined,
+    query: { enabled: !!address },
+  });
+
+  const { data: defaultAdminRoleRaw } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'DEFAULT_ADMIN_ROLE',
+  });
+
+  const { data: operatorRoleRaw } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'OPERATOR_ROLE',
+  });
+
+  const defaultAdminRole =
+    (defaultAdminRoleRaw as `0x${string}` | undefined) ??
+    ('0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`);
+  const operatorRole = operatorRoleRaw as `0x${string}` | undefined;
+
+  const { data: isComplianceAdminRaw, refetch: refetchComplianceAdmin } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'hasRole',
+    args: address ? [defaultAdminRole, address as `0x${string}`] : undefined,
     query: { enabled: !!address },
   });
 
@@ -86,11 +139,18 @@ function ComplianceManagerView() {
 
   const paused = Boolean(pausedRaw);
   const isOperator = Boolean(isOperatorRaw);
+  const isComplianceAdmin = Boolean(isComplianceAdminRaw);
   const tokenBlacklisted = Boolean(tokenBlacklistedRaw);
   const currentUserStatus = Number(userStatusRaw ?? 0);
   const supportedTokens = (supportedTokensRaw as `0x${string}`[]) || [];
   const poolAdmin = (lendingPoolAdminRaw as `0x${string}`) || undefined;
   const isPoolAdmin = Boolean(address && poolAdmin && (address as string).toLowerCase() === poolAdmin.toLowerCase());
+
+  useEffect(() => {
+    if (!isPoolAdmin && activeFeatureTab === 'liquidity') {
+      setActiveFeatureTab('core');
+    }
+  }, [isPoolAdmin, activeFeatureTab]);
 
   // Fetch aToken symbols for display
   useEffect(() => {
@@ -169,6 +229,22 @@ function ComplianceManagerView() {
     fetchTokenData();
   }, [selectedPoolToken, address, publicClient]);
 
+  const validateSingleToken = async (
+    tokenAddress: `0x${string}`,
+    setter: (meta: TokenMetadata | null) => void,
+    setError: (err: boolean) => void,
+  ) => {
+    if (!publicClient) return;
+    setError(false);
+    try {
+      const meta = await validateTokenOnchain(publicClient, tokenAddress);
+      setter(meta);
+    } catch {
+      setter(null);
+      setError(true);
+    }
+  };
+
   const runAction = async (actionKey: string, action: () => Promise<unknown>, successMessage: string) => {
     try {
       setBusyAction(actionKey);
@@ -187,7 +263,14 @@ function ComplianceManagerView() {
       setLastTxStatus(receipt.status === 'success' ? 'confirmed' : 'failed');
       setLastTxBlock(receipt.blockNumber ?? null);
       setFeedback(successMessage);
-      await Promise.all([refetchPaused(), refetchOperator(), refetchTokenStatus(), refetchUserStatus(), refetchSupportedTokens()]);
+      await Promise.all([
+        refetchPaused(),
+        refetchOperator(),
+        refetchComplianceAdmin(),
+        refetchTokenStatus(),
+        refetchUserStatus(),
+        refetchSupportedTokens(),
+      ]);
     } catch (error) {
       setLastTxStatus('failed');
       const message = error instanceof Error ? error.message : 'Unknown transaction error';
@@ -271,6 +354,89 @@ function ComplianceManagerView() {
         }),
       'User status updated successfully.',
     );
+  };
+
+  const grantOperatorRole = () => {
+    if (!validOperatorAddress) {
+      setFeedback('Enter a valid operator address.');
+      return Promise.resolve();
+    }
+    if (!operatorRole) {
+      setFeedback('Operator role is not available.');
+      return Promise.resolve();
+    }
+
+    return runAction(
+      'grantOperator',
+      () =>
+        writeContractAsync({
+          ...COMPLIANCE_MANAGER_CONTRACT,
+          functionName: 'grantRole',
+          args: [operatorRole, validOperatorAddress],
+        }),
+      'Operator role granted successfully.',
+    );
+  };
+
+  const revokeOperatorRole = () => {
+    if (!validOperatorAddress) {
+      setFeedback('Enter a valid operator address.');
+      return Promise.resolve();
+    }
+    if (!operatorRole) {
+      setFeedback('Operator role is not available.');
+      return Promise.resolve();
+    }
+
+    return runAction(
+      'revokeOperator',
+      () =>
+        writeContractAsync({
+          ...COMPLIANCE_MANAGER_CONTRACT,
+          functionName: 'revokeRole',
+          args: [operatorRole, validOperatorAddress],
+        }),
+      'Operator role revoked successfully.',
+    );
+  };
+
+  const addPool = () => {
+    if (!validNewPoolTokenAddress) {
+      setFeedback('Enter a valid pool token address.');
+      return Promise.resolve();
+    }
+    if (!newPoolInterestRate || Number(newPoolInterestRate) <= 0) {
+      setFeedback('Enter a valid interest rate.');
+      return Promise.resolve();
+    }
+    if (!newPoolName.trim() || !newPoolSymbol.trim()) {
+      setFeedback('Enter pool token name and symbol.');
+      return Promise.resolve();
+    }
+    if (!isPoolAdmin) {
+      setFeedback('addPool is admin-only. Connect the lending pool admin account.');
+      return Promise.resolve();
+    }
+
+    const parsedRate = BigInt(Math.floor(Number(newPoolInterestRate)));
+
+    return runAction(
+      'addPool',
+      () =>
+        writeContractAsync({
+          ...LENDING_POOL_CONTRACT,
+          functionName: 'addPool',
+          args: [validNewPoolTokenAddress, parsedRate, newPoolName.trim(), newPoolSymbol.trim()],
+        }),
+      'Pool added successfully.',
+    ).then(() => {
+      setNewPoolTokenInput('');
+      setNewPoolInterestRate('');
+      setNewPoolName('');
+      setNewPoolSymbol('');
+      setNewPoolTokenMetadata(null);
+      setNewPoolTokenError(false);
+    });
   };
 
   const provideLiquidity = async () => {
@@ -518,195 +684,351 @@ function ComplianceManagerView() {
         <p>General Compliance controls managed by the operators of the system</p>
       </header>
 
-      <div className="cm-status-grid">
-        <div className="cm-status-card">
-          <span>System status</span>
-          <strong>{paused ? 'Paused' : 'Active'}</strong>
-        </div>
-        <div className="cm-status-card">
-          <span>Your operator role</span>
-          <strong>{isOperator ? 'Operator' : 'Not operator'}</strong>
-        </div>
-      </div>
-
-      <div className="cm-actions-row">
-        <button onClick={pauseSystem} disabled={busyAction !== 'idle' || !isOperator || paused}>
-          Pause
-        </button>
-        <button onClick={unpauseSystem} disabled={busyAction !== 'idle' || !isOperator || !paused}>
-          Unpause
-        </button>
-      </div>
-
-      <div className="cm-block">
-        <h3>Token Blacklist</h3>
-        <label htmlFor="token-address">Token Address</label>
-        <input
-          id="token-address"
-          placeholder="0x..."
-          value={tokenAddressInput}
-          onChange={(event) => setTokenAddressInput(event.target.value.trim())}
-        />
-        <p className="cm-hint">
-          Current: {validTokenAddress ? (tokenBlacklisted ? 'Blacklisted' : 'Allowed') : 'Enter a valid address'}
-        </p>
-        <div className="cm-actions-row">
-          <button onClick={blacklistToken} disabled={busyAction !== 'idle' || !isOperator || !validTokenAddress}>
-            Blacklist Token
-          </button>
-          <button onClick={unblacklistToken} disabled={busyAction !== 'idle' || !isOperator || !validTokenAddress}>
-            Unblacklist Token
-          </button>
-        </div>
-      </div>
-
-      <div className="cm-block">
-        <h3>User Status</h3>
-        <label htmlFor="user-address">User Address</label>
-        <input
-          id="user-address"
-          placeholder="0x..."
-          value={userAddressInput}
-          onChange={(event) => setUserAddressInput(event.target.value.trim())}
-        />
-        <label htmlFor="status-select">New Status</label>
-        <select id="status-select" value={selectedStatus} onChange={(event) => setSelectedStatus(Number(event.target.value))}>
-          {USER_STATUS_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <p className="cm-hint">
-          Current status:{' '}
-          {USER_STATUS_OPTIONS.find((option) => option.value === currentUserStatus)?.label ?? `Unknown (${currentUserStatus})`}
-        </p>
-        <div className="cm-actions-row">
-          <button onClick={updateUserStatus} disabled={busyAction !== 'idle' || !isOperator || !validUserAddress}>
-            Update User Status
-          </button>
-        </div>
-      </div>
-
-      <div className="cm-block">
-        <h3>Lending Pool Liquidity</h3>
-        <label htmlFor="pool-select">Pool Token</label>
-        <select
-          id="pool-select"
-          value={selectedPoolToken}
-          onChange={(event) => setSelectedPoolToken(event.target.value as `0x${string}`)}
+      <nav className="section-tabs" aria-label="Compliance features">
+        <button
+          type="button"
+          className={activeFeatureTab === 'core' ? 'active' : ''}
+          onClick={() => setActiveFeatureTab('core')}
+          aria-pressed={activeFeatureTab === 'core'}
         >
-          <option value="">Select a pool</option>
-          {supportedTokens.map((token) => (
-            <option key={token} value={token}>
-              {poolTokenDisplayNames[token] || token}
-            </option>
-          ))}
-        </select>
-        <label htmlFor="liquidity-amount">Amount to Provide</label>
-        <input
-          id="liquidity-amount"
-          type="number"
-          placeholder="0.0"
-          value={liquidityAmount}
-          onChange={(event) => setLiquidityAmount(event.target.value)}
-          min="0"
-          step="0.01"
-        />
-        <p className="cm-hint">
-          {selectedPoolToken ? `Token: ${poolTokenDisplayNames[selectedPoolToken] || selectedPoolToken}` : 'Select a token'}
-        </p>
-        <div className="cm-actions-row">
+          System
+        </button>
+        {isPoolAdmin ? (
           <button
-            onClick={provideLiquidity}
-            disabled={busyAction !== 'idle' || !isPoolAdmin || !selectedPoolToken || !liquidityAmount}
+            type="button"
+            className={activeFeatureTab === 'liquidity' ? 'active' : ''}
+            onClick={() => setActiveFeatureTab('liquidity')}
+            aria-pressed={activeFeatureTab === 'liquidity'}
           >
-            Provide Liquidity
+            Lending pool
           </button>
-        </div>
-        <p className="cm-hint">Admin: {isPoolAdmin ? 'Yes' : poolAdmin ?? 'unknown'}</p>
-      </div>
-
-      <div className="cm-block">
-        <h3>Simulate Yield</h3>
-        <label htmlFor="yield-pool-select">Pool Token</label>
-        <select
-          id="yield-pool-select"
-          value={selectedYieldPoolToken}
-          onChange={(event) => setSelectedYieldPoolToken(event.target.value as `0x${string}`)}
+        ) : null}
+        <button
+          type="button"
+          className={activeFeatureTab === 'settlement' ? 'active' : ''}
+          onClick={() => setActiveFeatureTab('settlement')}
+          aria-pressed={activeFeatureTab === 'settlement'}
         >
-          <option value="">Select a pool</option>
-          {supportedTokens.map((token) => (
-            <option key={token} value={token}>
-              {poolTokenDisplayNames[token] || token}
-            </option>
-          ))}
-        </select>
-        <label htmlFor="yield-seconds">Seconds to Simulate</label>
-        <input
-          id="yield-seconds"
-          type="number"
-          placeholder="0"
-          value={yieldSeconds}
-          onChange={(event) => setYieldSeconds(event.target.value)}
-          min="0"
-          step="1"
-        />
-        <p className="cm-hint">
-          {selectedYieldPoolToken ? `Token: ${poolTokenDisplayNames[selectedYieldPoolToken] || selectedYieldPoolToken}` : 'Select a token'}
-        </p>
-        <div className="cm-actions-row">
-          <button onClick={simulateYield} disabled={busyAction !== 'idle' || !isOperator || !selectedYieldPoolToken}>
-            Simulate Yield
-          </button>
-        </div>
-      </div>
+          Settlement control
+        </button>
+        <button
+          type="button"
+          className={activeFeatureTab === 'operators' ? 'active' : ''}
+          onClick={() => setActiveFeatureTab('operators')}
+          aria-pressed={activeFeatureTab === 'operators'}
+        >
+          Operators
+        </button>
+      </nav>
 
-      <div className="cm-block">
-        <h3>Settlement Control</h3>
-        <div className="cm-status-grid">
-          <div className="cm-status-card">
-            <span>Settlement Window</span>
-            <strong>{settlementWindow ? `${settlementWindow} seconds` : 'Loading...'}</strong>
+      {activeFeatureTab === 'core' ? (
+        <>
+          <div className="cm-status-grid">
+            <div className="cm-status-card">
+              <span>System status</span>
+              <strong>{paused ? 'Paused' : 'Active'}</strong>
+            </div>
           </div>
-          <div className="cm-status-card">
-            <span>Time Until Settlement</span>
-            <strong>{settlementLoaded && countdownSeconds !== null ? `${countdownSeconds}s` : 'Loading...'}</strong>
+
+          <div className="cm-actions-row">
+            <button onClick={pauseSystem} disabled={busyAction !== 'idle' || !isOperator || paused}>
+              Pause
+            </button>
+            <button onClick={unpauseSystem} disabled={busyAction !== 'idle' || !isOperator || !paused}>
+              Unpause
+            </button>
+          </div>
+
+          <div className="cm-block">
+            <h3>Token Blacklist</h3>
+            <label htmlFor="token-address">Token Address</label>
+            <input
+              id="token-address"
+              placeholder="0x..."
+              value={tokenAddressInput}
+              onChange={(event) => {
+                setTokenAddressInput(event.target.value.trim());
+                setTokenAddressMetadata(null);
+                setTokenAddressError(false);
+              }}
+              onBlur={() => {
+                if (validTokenAddress) {
+                  void validateSingleToken(validTokenAddress, setTokenAddressMetadata, setTokenAddressError);
+                }
+              }}
+            />
+            <p className="cm-hint">{formatAddressLabel(tokenAddressMetadata, tokenAddressInput, !!validTokenAddress, tokenAddressError)}</p>
+            <p className="cm-hint">
+              Current: {validTokenAddress ? (tokenBlacklisted ? 'Blacklisted' : 'Allowed') : 'Enter a valid address'}
+            </p>
+            <div className="cm-actions-row">
+              <button onClick={blacklistToken} disabled={busyAction !== 'idle' || !isOperator || !validTokenAddress}>
+                Blacklist Token
+              </button>
+              <button onClick={unblacklistToken} disabled={busyAction !== 'idle' || !isOperator || !validTokenAddress}>
+                Unblacklist Token
+              </button>
+            </div>
+          </div>
+
+          <div className="cm-block">
+            <h3>User Status</h3>
+            <label htmlFor="user-address">User Address</label>
+            <input
+              id="user-address"
+              placeholder="0x..."
+              value={userAddressInput}
+              onChange={(event) => setUserAddressInput(event.target.value.trim())}
+            />
+            <label htmlFor="status-select">New Status</label>
+            <select id="status-select" value={selectedStatus} onChange={(event) => setSelectedStatus(Number(event.target.value))}>
+              {USER_STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="cm-hint">
+              Current status:{' '}
+              {USER_STATUS_OPTIONS.find((option) => option.value === currentUserStatus)?.label ?? `Unknown (${currentUserStatus})`}
+            </p>
+            <div className="cm-actions-row">
+              <button onClick={updateUserStatus} disabled={busyAction !== 'idle' || !isOperator || !validUserAddress}>
+                Update User Status
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {activeFeatureTab === 'liquidity' && isPoolAdmin ? (
+        <>
+          <div className="cm-block">
+            <h3>Add Pool</h3>
+            <label htmlFor="new-pool-token">Token Address</label>
+            <input
+              id="new-pool-token"
+              placeholder="0x..."
+              value={newPoolTokenInput}
+              onChange={(event) => {
+                setNewPoolTokenInput(event.target.value.trim());
+                setNewPoolTokenMetadata(null);
+                setNewPoolTokenError(false);
+              }}
+              onBlur={() => {
+                if (validNewPoolTokenAddress) {
+                  void validateSingleToken(validNewPoolTokenAddress, setNewPoolTokenMetadata, setNewPoolTokenError);
+                }
+              }}
+            />
+            <p className="cm-hint">{formatAddressLabel(newPoolTokenMetadata, newPoolTokenInput, !!validNewPoolTokenAddress, newPoolTokenError)}</p>
+
+            <label htmlFor="new-pool-rate">Interest Rate</label>
+            <input
+              id="new-pool-rate"
+              type="number"
+              placeholder="0"
+              value={newPoolInterestRate}
+              onChange={(event) => setNewPoolInterestRate(event.target.value)}
+              min="1"
+              step="1"
+            />
+
+            <label htmlFor="new-pool-name">aToken Name</label>
+            <input
+              id="new-pool-name"
+              placeholder="Aave Wrapped ETH"
+              value={newPoolName}
+              onChange={(event) => setNewPoolName(event.target.value)}
+            />
+
+            <label htmlFor="new-pool-symbol">aToken Symbol</label>
+            <input
+              id="new-pool-symbol"
+              placeholder="aWETH"
+              value={newPoolSymbol}
+              onChange={(event) => setNewPoolSymbol(event.target.value)}
+            />
+
+            <div className="cm-actions-row">
+              <button
+                onClick={addPool}
+                disabled={
+                  busyAction !== 'idle' ||
+                  !isPoolAdmin ||
+                  !validNewPoolTokenAddress ||
+                  !newPoolInterestRate ||
+                  !newPoolName.trim() ||
+                  !newPoolSymbol.trim()
+                }
+              >
+                Add Pool
+              </button>
+            </div>
+          </div>
+
+          <div className="cm-block">
+            <h3>Simulate Yield</h3>
+            <label htmlFor="yield-pool-select">Pool Token</label>
+            <select
+              id="yield-pool-select"
+              value={selectedYieldPoolToken}
+              onChange={(event) => setSelectedYieldPoolToken(event.target.value as `0x${string}`)}
+            >
+              <option value="">Select a pool</option>
+              {supportedTokens.map((token) => (
+                <option key={token} value={token}>
+                  {poolTokenDisplayNames[token] || token}
+                </option>
+              ))}
+            </select>
+            <label htmlFor="yield-seconds">Seconds to Simulate</label>
+            <input
+              id="yield-seconds"
+              type="number"
+              placeholder="0"
+              value={yieldSeconds}
+              onChange={(event) => setYieldSeconds(event.target.value)}
+              min="0"
+              step="1"
+            />
+            <p className="cm-hint">
+              {selectedYieldPoolToken ? `Token: ${poolTokenDisplayNames[selectedYieldPoolToken] || selectedYieldPoolToken}` : 'Select a token'}
+            </p>
+            <div className="cm-actions-row">
+              <button onClick={simulateYield} disabled={busyAction !== 'idle' || !isOperator || !selectedYieldPoolToken}>
+                Simulate Yield
+              </button>
+            </div>
+          </div>
+
+          <div className="cm-block">
+            <h3>Pool Liquidity</h3>
+            <label htmlFor="pool-select">Pool Token</label>
+            <select
+              id="pool-select"
+              value={selectedPoolToken}
+              onChange={(event) => setSelectedPoolToken(event.target.value as `0x${string}`)}
+            >
+              <option value="">Select a pool</option>
+              {supportedTokens.map((token) => (
+                <option key={token} value={token}>
+                  {poolTokenDisplayNames[token] || token}
+                </option>
+              ))}
+            </select>
+            <label htmlFor="liquidity-amount">Amount to Provide</label>
+            <input
+              id="liquidity-amount"
+              type="number"
+              placeholder="0.0"
+              value={liquidityAmount}
+              onChange={(event) => setLiquidityAmount(event.target.value)}
+              min="0"
+              step="0.01"
+            />
+            <p className="cm-hint">
+              {selectedPoolToken ? `Token: ${poolTokenDisplayNames[selectedPoolToken] || selectedPoolToken}` : 'Select a token'}
+            </p>
+            <div className="cm-actions-row">
+              <button
+                onClick={provideLiquidity}
+                disabled={busyAction !== 'idle' || !isPoolAdmin || !selectedPoolToken || !liquidityAmount}
+              >
+                Provide Liquidity
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {activeFeatureTab === 'settlement' ? (
+        <div className="cm-block">
+          <h3>Settlement Control</h3>
+          <div className="cm-status-grid">
+            <div className="cm-status-card">
+              <span>Settlement Window</span>
+              <strong>{settlementWindow ? `${settlementWindow} seconds` : 'Loading...'}</strong>
+            </div>
+            <div className="cm-status-card">
+              <span>Time Until Settlement</span>
+              <strong>{settlementLoaded && countdownSeconds !== null ? `${countdownSeconds}s` : 'Loading...'}</strong>
+            </div>
+          </div>
+
+          <label htmlFor="new-settlement-window">New Settlement Window (seconds)</label>
+          <input
+            id="new-settlement-window"
+            type="number"
+            placeholder="300"
+            value={newSettlementWindow}
+            onChange={(event) => setNewSettlementWindow(event.target.value)}
+            min="60"
+            step="1"
+          />
+          <p className="cm-hint">Minimum: 60 seconds</p>
+
+          <div className="cm-actions-row">
+            <button
+              onClick={updateSettlementWindow}
+              disabled={busyAction !== 'idle' || !isOperator || !newSettlementWindow}
+            >
+              Update Settlement Window
+            </button>
+            <button
+              onClick={settleBatch}
+              disabled={busyAction !== 'idle' || !isOperator || !settlementLoaded || (countdownSeconds !== null && countdownSeconds > 0)}
+            >
+              Settle Batch
+            </button>
+          </div>
+          <p className="cm-hint">
+            {countdownSeconds !== null && countdownSeconds > 0
+              ? `Settlement window expires in ${countdownSeconds} seconds`
+              : 'Settlement window has expired. You can settle the batch.'}
+          </p>
+        </div>
+      ) : null}
+
+      {activeFeatureTab === 'operators' ? (
+        <div className="cm-block">
+          <h3>Operator Management</h3>
+          <div className="cm-status-grid">
+            <div className="cm-status-card">
+              <span>Admin</span>
+              <strong>{isComplianceAdmin ? 'Yes' : 'No'}</strong>
+            </div>
+            <div className="cm-status-card">
+              <span>Operator</span>
+              <strong>{isOperator ? 'Yes' : 'No'}</strong>
+            </div>
+          </div>
+
+          <label htmlFor="operator-address">Operator Address</label>
+          <input
+            id="operator-address"
+            placeholder="0x..."
+            value={operatorAddressInput}
+            onChange={(event) => setOperatorAddressInput(event.target.value.trim())}
+          />
+          <p className="cm-hint">Only compliance admins can grant/revoke operator role.</p>
+
+          <div className="cm-actions-row">
+            <button
+              onClick={grantOperatorRole}
+              disabled={busyAction !== 'idle' || !isComplianceAdmin || !validOperatorAddress || !operatorRole}
+            >
+              Add Operator
+            </button>
+            <button
+              onClick={revokeOperatorRole}
+              disabled={busyAction !== 'idle' || !isComplianceAdmin || !validOperatorAddress || !operatorRole}
+            >
+              Remove Operator
+            </button>
           </div>
         </div>
-
-        <label htmlFor="new-settlement-window">New Settlement Window (seconds)</label>
-        <input
-          id="new-settlement-window"
-          type="number"
-          placeholder="300"
-          value={newSettlementWindow}
-          onChange={(event) => setNewSettlementWindow(event.target.value)}
-          min="60"
-          step="1"
-        />
-        <p className="cm-hint">Minimum: 60 seconds</p>
-
-        <div className="cm-actions-row">
-          <button
-            onClick={updateSettlementWindow}
-            disabled={busyAction !== 'idle' || !isOperator || !newSettlementWindow}
-          >
-            Update Settlement Window
-          </button>
-          <button
-            onClick={settleBatch}
-            disabled={busyAction !== 'idle' || !isOperator || !settlementLoaded || (countdownSeconds !== null && countdownSeconds > 0)}
-          >
-            Settle Batch
-          </button>
-        </div>
-        <p className="cm-hint">
-          {countdownSeconds !== null && countdownSeconds > 0
-            ? `Settlement window expires in ${countdownSeconds} seconds`
-            : 'Settlement window has expired. You can settle the batch.'}
-        </p>
-      </div>
+      ) : null}
 
       {lastTxHash ? (
         <div className="cm-tx-box">
