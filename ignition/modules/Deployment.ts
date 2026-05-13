@@ -1,6 +1,6 @@
 import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
 
-export default buildModule("LocalDeployment", (m) => {
+export default buildModule("Deployment", (m) => {
   // 1. DEPLOY ASSET MOCKS
   const mockWeth = m.contract("MockWETH", [], { id: "MockWETH" });
   const tokenA = m.contract("MockERC20", ["Token A", "TKNA", 18], { id: "TokenA" });

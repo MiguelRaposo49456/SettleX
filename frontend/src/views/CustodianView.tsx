@@ -14,6 +14,8 @@ import type { NFTCollectionMetadata } from '../hooks/useNftValidation';
 const ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+import deployed from '../../../ignition/deployments/chain-31337/deployed_addresses.json'
+
 function showContractError(error: unknown, fallbackMessage: string, presentError: (message: string) => void) {
   const message = error instanceof Error ? error.message : fallbackMessage;
   presentError(message);
@@ -90,7 +92,7 @@ function CustodianView() {
 
   const nftHeld = Boolean((nftBalanceRaw as readonly [boolean, boolean] | undefined)?.[0]);
 
-  const wethAddress = (import.meta.env.VITE_WETH_ADDRESS as `0x${string}` | undefined) ?? (ZERO_ADDRESS as `0x${string}`);
+  const wethAddress = (deployed['Deployment#MockWETH'] as `0x${string}` | undefined) ?? (ZERO_ADDRESS as `0x${string}`);
 
   // --- Initialization and compliance checks ---
   const { data: isInitialized } = useReadContract({

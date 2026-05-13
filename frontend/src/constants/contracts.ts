@@ -5,32 +5,34 @@ import SettlementEngineABI from '../abis/SettlementEngine.json';
 import LendingPoolABI from '../abis/MockLendingPool.json';
 import ComplianceManagerABI from '../abis/ComplianceManager.json';
 
+import deployed from '../../../ignition/deployments/chain-31337/deployed_addresses.json'
+
 export const COMPLIANCE_MANAGER_CONTRACT = {
-    address: import.meta.env.VITE_COMPLIANCE_MANAGER_ADDRESS as `0x${string}`,
+    address: deployed['Deployment#ComplianceManager'] as `0x${string}`,
     abi: ComplianceManagerABI.abi,
 } as const;
 
 export const CUSTODIAN_CONTRACT = {
-  address: import.meta.env.VITE_CUSTODIAN_ADDRESS as `0x${string}`,
+  address: deployed['Deployment#Custodian'] as `0x${string}`,
   abi: CustodianABI.abi,
 } as const;
 
 export const FUNGIBLE_ORDERBOOK_CONTRACT = {
-  address: import.meta.env.VITE_FUNGIBLE_ORDERBOOK_ADDRESS as `0x${string}`,
+  address: deployed['Deployment#FungibleOrderbook'] as `0x${string}`,
   abi: FungibleOrderbookABI.abi,
 } as const;
 
 export const NFT_ORDERBOOK_CONTRACT = {
-  address: import.meta.env.VITE_NFT_ORDERBOOK_ADDRESS as `0x${string}`,
+  address: deployed['Deployment#NFTOrderbook'] as `0x${string}`,
   abi: NonFungibleOrderbookABI.abi,
 } as const;
 
 export const SETTLEMENT_ENGINE_CONTRACT = {
-    address: import.meta.env.VITE_SETTLEMENT_ENGINE_ADDRESS as `0x${string}`,
+    address: deployed['Deployment#SettlementEngine'] as `0x${string}`,
     abi: SettlementEngineABI.abi,
 } as const;
 
 export const LENDING_POOL_CONTRACT = {
-    address: import.meta.env.VITE_LENDING_POOL_ADDRESS as `0x${string}`,
+    address: deployed['Deployment#MockLendingPool'] as `0x${string}`,
     abi: LendingPoolABI.abi,
 } as const;
