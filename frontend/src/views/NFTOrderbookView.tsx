@@ -296,7 +296,7 @@ function NFTOrderbookView() {
               { indexed: false, name: 'tokenId', type: 'uint256' },
             ],
           },
-          fromBlock: 0xa00000n,
+          fromBlock: latestBlock > 999n ? latestBlock - 999n : 0n,
           toBlock: latestBlock,
         }),
         publicClient.getLogs({
@@ -311,7 +311,7 @@ function NFTOrderbookView() {
               { indexed: false, name: 'tokenId', type: 'uint256' },
             ],
           },
-          fromBlock: 0xa00000n,
+          fromBlock: latestBlock > 999n ? latestBlock - 999n : 0n,
           toBlock: latestBlock,
         }),
         publicClient.getLogs({
@@ -324,7 +324,7 @@ function NFTOrderbookView() {
               { indexed: true, name: 'offerId', type: 'uint256' },
             ],
           },
-          fromBlock: 0xa00000n,
+          fromBlock: latestBlock > 999n ? latestBlock - 999n : 0n,
           toBlock: latestBlock,
         }),
       ]);

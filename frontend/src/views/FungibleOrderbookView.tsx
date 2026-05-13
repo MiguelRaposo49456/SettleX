@@ -250,8 +250,6 @@ function FungibleOrderbookView() {
     return { tokenIn, tokenOut };
   };
 
-  
-
   const refreshOrders = async () => {
     if (!publicClient) return;
 
@@ -259,7 +257,7 @@ function FungibleOrderbookView() {
       setOrdersLoading(true);
       const latestBlock = await publicClient.getBlockNumber();
       
-      const recentBlockWindow = 10n;
+      const recentBlockWindow = 9999n;
       const fromBlock = latestBlock > recentBlockWindow ? latestBlock - recentBlockWindow : 0n;
       
       const logs = await publicClient.getLogs({
