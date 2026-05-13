@@ -4,8 +4,6 @@ import { decodeEventLog } from 'viem';
 import { parseEther, formatEther, parseUnits, formatUnits } from 'viem';
 import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi';
 import { CUSTODIAN_CONTRACT, LENDING_POOL_CONTRACT, COMPLIANCE_MANAGER_CONTRACT } from '../constants/contracts';
-import TokenPicker from '../components/TokenPicker';
-import NFTCollectionPicker from '../components/NFTCollectionPicker';
 import validateTokenOnchain from '../hooks/useTokenValidation';
 import validateNftCollectionOnchain from '../hooks/useNftValidation';
 import type { TokenMetadata } from '../hooks/useTokenValidation';
@@ -34,13 +32,13 @@ function CustodianView() {
   const [ethAmount, setEthAmount] = useState('');
   const [busyAction, setBusyAction] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const [showPicker, setShowPicker] = useState(false);
+  
   const [selectedToken, setSelectedToken] = useState<TokenMetadata | null>(null);
   const [tokenAmount, setTokenAmount] = useState('');
   const [tokenBusy, setTokenBusy] = useState(false);
   const [tokenFeedback, setTokenFeedback] = useState('');
   const [customAddr, setCustomAddr] = useState('');
-  const [showNftPicker, setShowNftPicker] = useState(false);
+  
   const [selectedNftCollection, setSelectedNftCollection] = useState<NFTCollectionMetadata | null>(null);
   const [nftTokenId, setNftTokenId] = useState('');
   const [nftBusy, setNftBusy] = useState(false);
@@ -399,20 +397,7 @@ function CustodianView() {
     }
   };
 
-  const handleTokenSelect = (token: TokenMetadata) => {
-    setSelectedToken(token);
-    setShowPicker(false);
-    try {
-      refetchATokenForSelected?.();
-    } catch {
-      // ignore
-    }
-    try {
-      refetchDepositedToken?.();
-    } catch {
-      // ignore
-    }
-  };
+  
 
   const depositNft = async () => {
     if (!selectedNftCollection) {
@@ -542,10 +527,7 @@ function CustodianView() {
     }
   };
 
-  const handleNftCollectionSelect = (collection: NFTCollectionMetadata) => {
-    setSelectedNftCollection(collection);
-    setShowNftPicker(false);
-  };
+  
 
   return (
     <section className="cm-panel">
@@ -652,7 +634,7 @@ function CustodianView() {
                       <button onClick={() => setSelectedToken(null)}>Change</button>
                     </div>
                   ) : (
-                    <button onClick={() => setShowPicker(true)}>Pick token</button>
+                    <div style={{ color: 'rgba(0,0,0,0.65)' }}>Insert a token address</div>
                   )}
                 </div>
               </div>
@@ -662,7 +644,7 @@ function CustodianView() {
               </div>
             </div>
             <div style={{ marginTop: 8 }}>
-              <label>Custom token address</label>
+              <label>Token address</label>
               <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                 <input placeholder="0x..." value={customAddr} onChange={(e) => setCustomAddr(e.target.value.trim())} style={{ flex: 1 }} />
                 <button onClick={submitCustomToken} disabled={tokenBusy || !customAddr}>Validate & Use</button>
@@ -687,7 +669,7 @@ function CustodianView() {
                       <button onClick={() => setSelectedToken(null)}>Change</button>
                     </div>
                   ) : (
-                    <button onClick={() => setShowPicker(true)}>Pick token</button>
+                    <div style={{ color: 'rgba(0,0,0,0.65)' }}>Insert a token address</div>
                   )}
                 </div>
               </div>
@@ -727,7 +709,7 @@ function CustodianView() {
                       <button onClick={() => setSelectedNftCollection(null)}>Change</button>
                     </div>
                   ) : (
-                    <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
+                    <div style={{ color: 'rgba(0,0,0,0.65)' }}>Insert a NFT collection address</div>
                   )}
                 </div>
               </div>
@@ -737,7 +719,7 @@ function CustodianView() {
               </div>
             </div>
             <div style={{ marginTop: 8 }}>
-              <label>Custom NFT collection address</label>
+              <label>NFT collection address</label>
               <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                 <input placeholder="0x..." value={customNftAddr} onChange={(event) => setCustomNftAddr(event.target.value.trim())} style={{ flex: 1 }} />
                 <button onClick={submitCustomNft} disabled={nftBusy || !customNftAddr}>Validate & Use</button>
@@ -762,7 +744,7 @@ function CustodianView() {
                       <button onClick={() => setSelectedNftCollection(null)}>Change</button>
                     </div>
                   ) : (
-                    <button onClick={() => setShowNftPicker(true)}>Pick collection</button>
+                    <div style={{ color: 'rgba(0,0,0,0.65)' }}>Insert a NFT collection address</div>
                   )}
                 </div>
               </div>
@@ -780,8 +762,7 @@ function CustodianView() {
         </>
       )}
 
-      {showPicker ? <TokenPicker onSelect={handleTokenSelect} onClose={() => setShowPicker(false)} /> : null}
-      {showNftPicker ? <NFTCollectionPicker onSelect={handleNftCollectionSelect} onClose={() => setShowNftPicker(false)} /> : null}
+      
 
       {showErrorModal ? (
         <div

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { decodeEventLog, encodePacked, isAddress, keccak256, parseUnits } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
-import TokenPicker from '../components/TokenPicker';
 import { FUNGIBLE_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts.js';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation.js';
 
@@ -80,8 +79,7 @@ function FungibleOrderbookView() {
   const [tokenMetadataByAddress, setTokenMetadataByAddress] = useState<Record<string, TokenMetadata | null>>({});
   const [pendingCancel, setPendingCancel] = useState<bigint | null>(null);
   const [pendingTake, setPendingTake] = useState<bigint | null>(null);
-  const [showTokenInPicker, setShowTokenInPicker] = useState(false);
-  const [showTokenOutPicker, setShowTokenOutPicker] = useState(false);
+  
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [showMyOrdersOnly, setShowMyOrdersOnly] = useState(false);
 
@@ -190,19 +188,7 @@ function FungibleOrderbookView() {
     return { tokenIn, tokenOut };
   };
 
-  const handleTokenInSelect = (token: TokenMetadata) => {
-    setTokenInInput(token.address);
-    setTokenInMetadata(token);
-    setTokenInError(false);
-    setShowTokenInPicker(false);
-  };
-
-  const handleTokenOutSelect = (token: TokenMetadata) => {
-    setTokenOutInput(token.address);
-    setTokenOutMetadata(token);
-    setTokenOutError(false);
-    setShowTokenOutPicker(false);
-  };
+  
 
   const refreshOrders = async () => {
     if (!publicClient) return;
@@ -678,9 +664,6 @@ function FungibleOrderbookView() {
             onBlur={() => { if (validTokenIn) validateSingleToken(validTokenIn, setTokenInMetadata, setTokenInError); }}
             style={{ flex: 1, minWidth: 260 }}
           />
-          <button type="button" onClick={() => setShowTokenInPicker(true)} disabled={busy}>
-            Pick token
-          </button>
         </div>
         <p className="cm-hint">{formatAddressLabel(tokenInMetadata, tokenInInput, !!validTokenIn, tokenInError)}</p>
 
@@ -694,9 +677,6 @@ function FungibleOrderbookView() {
             onBlur={() => { if (validTokenOut) validateSingleToken(validTokenOut, setTokenOutMetadata, setTokenOutError); }}
             style={{ flex: 1, minWidth: 260 }}
           />
-          <button type="button" onClick={() => setShowTokenOutPicker(true)} disabled={busy}>
-            Pick token
-          </button>
         </div>
         <p className="cm-hint">{formatAddressLabel(tokenOutMetadata, tokenOutInput, !!validTokenOut, tokenOutError)}</p>
         <label htmlFor="amount-in">Amount to receive</label>
@@ -764,8 +744,7 @@ function FungibleOrderbookView() {
         </div>
       ) : null}
 
-      {showTokenInPicker ? <TokenPicker onSelect={handleTokenInSelect} onClose={() => setShowTokenInPicker(false)} /> : null}
-      {showTokenOutPicker ? <TokenPicker onSelect={handleTokenOutSelect} onClose={() => setShowTokenOutPicker(false)} /> : null}
+      
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
 

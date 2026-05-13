@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isAddress, keccak256, encodePacked, decodeEventLog } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
-import TokenPicker from '../components/TokenPicker';
-import NFTCollectionPicker from '../components/NFTCollectionPicker';
+
 import { NFT_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation';
 import validateNftCollectionOnchain, { type NFTCollectionMetadata } from '../hooks/useNftValidation';
@@ -94,10 +93,7 @@ function NFTOrderbookView() {
   const [nftMetadataByAddress, setNftMetadataByAddress] = useState<Record<string, NFTCollectionMetadata | null>>({});
   const [pendingCancelListingId, setPendingCancelListingId] = useState<bigint | null>(null);
   const [pendingCancelOfferId, setPendingCancelOfferId] = useState<bigint | null>(null);
-  const [showListingCollectionPicker, setShowListingCollectionPicker] = useState(false);
-  const [showListingPaymentTokenPicker, setShowListingPaymentTokenPicker] = useState(false);
-  const [showOfferCollectionPicker, setShowOfferCollectionPicker] = useState(false);
-  const [showOfferTokenPicker, setShowOfferTokenPicker] = useState(false);
+  
   const [marketSearchQuery, setMarketSearchQuery] = useState('');
   const [showMyListingsOnly, setShowMyListingsOnly] = useState(false);
   const [showMyOffersOnly, setShowMyOffersOnly] = useState(false);
@@ -215,51 +211,7 @@ function NFTOrderbookView() {
     return nftMeta ? `${nftMeta.symbol} - ${nftMeta.name}` : shortAddress(addressValue);
   };
 
-  const handleListingCollectionSelect = (collection: NFTCollectionMetadata) => {
-    setListingCollectionInput(collection.address);
-    setListingCollectionMetadata(collection);
-    setListingCollectionError(false);
-    setShowListingCollectionPicker(false);
-  };
-
-  const handleListingPaymentTokenSelect = (token: TokenMetadata) => {
-    setListingPaymentTokenInput(token.address);
-    setListingPaymentTokenMetadata(token);
-    setListingPaymentCollectionMetadata(null);
-    setListingPaymentError(false);
-    setShowListingPaymentTokenPicker(false);
-  };
-
-  const handleListingPaymentCollectionSelect = (collection: NFTCollectionMetadata) => {
-    setListingPaymentTokenInput(collection.address);
-    setListingPaymentCollectionMetadata(collection);
-    setListingPaymentTokenMetadata(null);
-    setListingPaymentError(false);
-    setShowListingPaymentTokenPicker(false);
-  };
-
-  const handleOfferCollectionSelect = (collection: NFTCollectionMetadata) => {
-    setOfferCollectionInput(collection.address);
-    setOfferCollectionMetadata(collection);
-    setOfferCollectionError(false);
-    setShowOfferCollectionPicker(false);
-  };
-
-  const handleOfferTokenSelect = (token: TokenMetadata) => {
-    setOfferTokenInput(token.address);
-    setOfferTokenMetadata(token);
-    setOfferTokenCollectionMetadata(null);
-    setOfferTokenError(false);
-    setShowOfferTokenPicker(false);
-  };
-
-  const handleOfferTokenCollectionSelect = (collection: NFTCollectionMetadata) => {
-    setOfferTokenInput(collection.address);
-    setOfferTokenCollectionMetadata(collection);
-    setOfferTokenMetadata(null);
-    setOfferTokenError(false);
-    setShowOfferTokenPicker(false);
-  };
+  
 
   const refreshMarket = async () => {
     if (!publicClient) return;
@@ -1187,9 +1139,6 @@ function NFTOrderbookView() {
               }}
               style={{ flex: 1, minWidth: 260 }}
             />
-            <button type="button" onClick={() => setShowListingCollectionPicker(true)} disabled={busy}>
-              Pick NFT
-            </button>
           </div>
           <p className="cm-hint">{formatNftLabel(listingCollectionMetadata, listingCollectionInput, !!validListingCollection, listingCollectionError)}</p>
 
@@ -1244,9 +1193,6 @@ function NFTOrderbookView() {
               }}
               style={{ flex: 1, minWidth: 260 }}
             />
-            <button type="button" onClick={() => setShowListingPaymentTokenPicker(true)} disabled={busy}>
-              Pick {listingPaymentType === 0 ? 'token' : 'NFT'}
-            </button>
           </div>
           <p className="cm-hint">
             {listingPaymentType === 0
@@ -1313,9 +1259,6 @@ function NFTOrderbookView() {
               }}
               style={{ flex: 1, minWidth: 260 }}
             />
-            <button type="button" onClick={() => setShowOfferCollectionPicker(true)} disabled={busy}>
-              Pick NFT
-            </button>
           </div>
           <p className="cm-hint">{formatNftLabel(offerCollectionMetadata, offerCollectionInput, !!validOfferCollection, offerCollectionError)}</p>
 
@@ -1370,9 +1313,6 @@ function NFTOrderbookView() {
               }}
               style={{ flex: 1, minWidth: 260 }}
             />
-            <button type="button" onClick={() => setShowOfferTokenPicker(true)} disabled={busy}>
-              Pick {offerType === 0 ? 'token' : 'NFT'}
-            </button>
           </div>
           <p className="cm-hint">
             {offerType === 0
@@ -1423,12 +1363,7 @@ function NFTOrderbookView() {
         </div>
       ) : null}
 
-      {showListingCollectionPicker ? <NFTCollectionPicker onSelect={handleListingCollectionSelect} onClose={() => setShowListingCollectionPicker(false)} /> : null}
-      {showListingPaymentTokenPicker && listingPaymentType === 0 ? <TokenPicker onSelect={handleListingPaymentTokenSelect} onClose={() => setShowListingPaymentTokenPicker(false)} /> : null}
-      {showListingPaymentTokenPicker && listingPaymentType === 1 ? <NFTCollectionPicker onSelect={handleListingPaymentCollectionSelect} onClose={() => setShowListingPaymentTokenPicker(false)} /> : null}
-      {showOfferCollectionPicker ? <NFTCollectionPicker onSelect={handleOfferCollectionSelect} onClose={() => setShowOfferCollectionPicker(false)} /> : null}
-      {showOfferTokenPicker && offerType === 0 ? <TokenPicker onSelect={handleOfferTokenSelect} onClose={() => setShowOfferTokenPicker(false)} /> : null}
-      {showOfferTokenPicker && offerType === 1 ? <NFTCollectionPicker onSelect={handleOfferTokenCollectionSelect} onClose={() => setShowOfferTokenPicker(false)} /> : null}
+      
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
     </section>
