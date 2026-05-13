@@ -23,7 +23,7 @@ export default buildModule("Deployment", (m) => {
   const custodian = m.contract("Custodian", [compliance, lendingPool, mockWeth]);
 
   // 6. SETUP: Register Token Pools in the LendingPool
-  //const wethPool = m.call(lendingPool, "addPool", [mockWeth, 500, "WETH", "WETH"], { id: "AddWethPool" });
+  const wethPool = m.call(lendingPool, "addPool", [mockWeth, 500, "WETH", "WETH"], { id: "AddWethPool" });
   const tokenAPool = m.call(lendingPool, "addPool", [tokenA, 300, "Token A", "TKNA"], { id: "AddTokenAPool" });
 
   // 7. INITIALIZATION (Wiring circular dependencies)
@@ -37,7 +37,7 @@ export default buildModule("Deployment", (m) => {
   const traderAmount = BigInt(500) * BigInt(10**18); // 500 tokens for local trading/testing
 
   // Fund WETH by depositing ETH into MockWETH from the deployer account
-  //const depositWeth = m.call(mockWeth, "deposit", [], { id: "DepositWeth", value: liquidityAmount, from: m.getAccount(0) });
+  const depositWeth = m.call(mockWeth, "deposit", [], { id: "DepositWeth", value: liquidityAmount, from: m.getAccount(0) });
   const mintA = m.call(tokenA, "mint", [m.getAccount(0), liquidityAmount], { id: "MintA" });
 
   m.call(tokenA, "mint", [m.getAccount(0), traderAmount], { id: "MintATrader0", after: [mintA] });
@@ -50,11 +50,11 @@ export default buildModule("Deployment", (m) => {
   m.call(anotherMockNFT, "mint", [m.getAccount(0), BigInt(1)], { id: "MintAnotherNFT1" });
 
   // Approve the LendingPool to take the tokens
-  //const approveWeth = m.call(mockWeth, "approve", [lendingPool, liquidityAmount], { id: "ApproveWeth", after: [depositWeth] });
+  const approveWeth = m.call(mockWeth, "approve", [lendingPool, liquidityAmount], { id: "ApproveWeth", after: [depositWeth] });
   const approveA = m.call(tokenA, "approve", [lendingPool, liquidityAmount], { id: "ApproveA", after: [mintA] });
 
   // Inject funds into the pool to cover future yield and withdrawals
-  //m.call(lendingPool, "addLiquidity", [mockWeth, liquidityAmount], { id: "AddWethLiquidity", after: [approveWeth, wethPool] });
+  m.call(lendingPool, "addLiquidity", [mockWeth, liquidityAmount], { id: "AddWethLiquidity", after: [approveWeth, wethPool] });
   m.call(lendingPool, "addLiquidity", [tokenA, liquidityAmount], { id: "AddTokenALiquidity", after: [approveA, tokenAPool] });
 
   return { 
