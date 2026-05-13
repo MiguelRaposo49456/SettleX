@@ -5,7 +5,10 @@ import SettlementEngineABI from '../abis/SettlementEngine.json';
 import LendingPoolABI from '../abis/MockLendingPool.json';
 import ComplianceManagerABI from '../abis/ComplianceManager.json';
 
-import deployed from '../../../ignition/deployments/chain-31337/deployed_addresses.json'
+import localDeployed from '../../../ignition/deployments/chain-31337/deployed_addresses.json'
+import sepoliaDeployed from '../../../ignition/deployments/chain-11155111/deployed_addresses.json'
+
+const deployed = import.meta.env.VITE_CHAIN_ID === '11155111' ? sepoliaDeployed : localDeployed
 
 export const COMPLIANCE_MANAGER_CONTRACT = {
     address: deployed['Deployment#ComplianceManager'] as `0x${string}`,

@@ -29,6 +29,7 @@
     "@chainlink/contracts": "^1.5.0",
     "@openzeppelin/contracts": "^5.4.0",
     "@uniswap/v2-periphery": "^1.1.0-beta.0",
+    "dotenv": "^17.4.2",
     "npm": "^11.11.1",
     "solidity-linked-list": "^6.5.0"
   }

@@ -33,12 +33,10 @@ export default buildModule("Deployment", (m) => {
   m.call(settlementEngine, "initialize", [fungibleOrderbook, nftOrderbook, custodian]);
 
   // 8. AUTOMATED LIQUIDITY: Pre-funding the LendingPool
-  // Use a smaller deposit so the deployer account can afford the upfront ETH cost
   const liquidityAmount = BigInt(1000) * BigInt(10**18); // 1,000 tokens for liquidity
   const traderAmount = BigInt(500) * BigInt(10**18); // 500 tokens for local trading/testing
 
   // Fund WETH by depositing ETH into MockWETH from the deployer account
-  // MockWETH.deposit() is payable and m.call supports sending value and specifying the sender
   const depositWeth = m.call(mockWeth, "deposit", [], { id: "DepositWeth", value: liquidityAmount, from: m.getAccount(0) });
   const mintA = m.call(tokenA, "mint", [m.getAccount(0), liquidityAmount], { id: "MintA" });
 

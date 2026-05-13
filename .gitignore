@@ -21,3 +21,6 @@
 
 # deployment files
 /ignition/deployments
+
+# env files
+.env
