@@ -23,8 +23,8 @@ export default buildModule("Deployment", (m) => {
   const custodian = m.contract("Custodian", [compliance, lendingPool, mockWeth]);
 
   // 6. SETUP: Register Token Pools in the LendingPool
-  const wethPool = m.call(lendingPool, "addPool", [mockWeth, 500, "WETH", "WETH"], { id: "AddWethPool" });
-  const tokenAPool = m.call(lendingPool, "addPool", [tokenA, 300, "Token A", "TKNA"], { id: "AddTokenAPool" });
+  const wethPool = m.call(lendingPool, "addPool", [mockWeth, 500, "aWETH", "aWETH"], { id: "AddWethPool" });
+  const tokenAPool = m.call(lendingPool, "addPool", [tokenA, 300, "aToken A", "aTKNA"], { id: "AddTokenAPool" });
 
   // 7. INITIALIZATION (Wiring circular dependencies)
   m.call(custodian, "initialize", [fungibleOrderbook, nftOrderbook, settlementEngine], { after: [wethPool] });

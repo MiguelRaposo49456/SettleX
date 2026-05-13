@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { decodeEventLog, encodePacked, isAddress, keccak256, parseUnits } from 'viem';
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
-import { FUNGIBLE_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts.js';
+import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi';
+import { CUSTODIAN_CONTRACT, FUNGIBLE_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts.js';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation.js';
 
 const ORDER_SIDE_OPTIONS = [
   { value: 0, label: 'Buy' },
   { value: 1, label: 'Sell' },
 ] as const;
+
+const ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 function generateSalt(): `0x${string}` {
   const bytes = new Uint8Array(32);
@@ -21,6 +24,18 @@ function formatAddressLabel(metadata: TokenMetadata | null, input: string, isVal
   if (fetchError) return '⚠ Not a valid ERC20 token';
   if (metadata) return `✓ ${metadata.symbol} — ${metadata.name} (${metadata.decimals} decimals)`;
   return 'Address looks valid. Click away to validate token metadata.';
+}
+
+function formatTokenDisplay(address: `0x${string}`, metadata: TokenMetadata | null) {
+  if (address.toLowerCase() === ETH_SENTINEL.toLowerCase()) {
+    return 'ETH';
+  }
+
+  if (metadata) {
+    return `${metadata.symbol} — ${metadata.name}`;
+  }
+
+  return shortAddress(address);
 }
 
 type OrderRecord = {
@@ -70,6 +85,8 @@ function FungibleOrderbookView() {
   const [tokenOutMetadata, setTokenOutMetadata] = useState<TokenMetadata | null>(null);
   const [tokenInError, setTokenInError] = useState(false);
   const [tokenOutError, setTokenOutError] = useState(false);
+  const [tokenInIsEth, setTokenInIsEth] = useState(false);
+  const [tokenOutIsEth, setTokenOutIsEth] = useState(false);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [lastCommitHash, setLastCommitHash] = useState<`0x${string}` | null>(null);
@@ -93,10 +110,52 @@ function FungibleOrderbookView() {
     [tokenOutInput],
   );
 
+  const { data: wethAddressRaw } = useReadContract({
+    ...CUSTODIAN_CONTRACT,
+    functionName: 'weth',
+    query: { enabled: true },
+  });
+
+  const wethAddress = (wethAddressRaw as `0x${string}` | undefined) ?? (ZERO_ADDRESS as `0x${string}`);
+
+  const { data: aWethAddressRaw } = useReadContract({
+    ...LENDING_POOL_CONTRACT,
+    functionName: 'getAToken',
+    args: [wethAddress],
+    query: { enabled: wethAddress !== (ZERO_ADDRESS as `0x${string}`) },
+  });
+
+  const ethTokenAddress = useMemo(() => {
+    const maybeAToken = aWethAddressRaw as `0x${string}` | undefined;
+    if (maybeAToken && maybeAToken.toLowerCase() !== ZERO_ADDRESS) return maybeAToken;
+    return ETH_SENTINEL as `0x${string}`;
+  }, [aWethAddressRaw]);
+
+  const resolveOrderTokenAddress = async (tokenAddress: `0x${string}`) => {
+    if (!publicClient) return tokenAddress;
+
+    try {
+      const aTokenAddress = (await publicClient.readContract({
+        address: LENDING_POOL_CONTRACT.address,
+        abi: LENDING_POOL_CONTRACT.abi,
+        functionName: 'getAToken',
+        args: [tokenAddress],
+      })) as `0x${string}`;
+
+      if (aTokenAddress && aTokenAddress.toLowerCase() !== ZERO_ADDRESS) {
+        return aTokenAddress;
+      }
+    } catch {
+      // Fall through to the supplied address when the token is not registered.
+    }
+
+    return tokenAddress;
+  };
+
   const canSubmit = Boolean(
     address &&
-    validTokenIn &&
-    validTokenOut &&
+    (tokenInIsEth || validTokenIn) &&
+    (tokenOutIsEth || validTokenOut) &&
     amountInInput.trim() &&
     amountOutInput.trim() &&
     !busy,
@@ -174,12 +233,15 @@ function FungibleOrderbookView() {
 
   const validateTokens = async () => {
     if (!publicClient) throw new Error('Public client not available.');
-    if (!validTokenIn) throw new Error('Enter a valid tokenIn address.');
-    if (!validTokenOut) throw new Error('Enter a valid tokenOut address.');
+    if (!tokenInIsEth && !validTokenIn) throw new Error('Enter a valid tokenIn address.');
+    if (!tokenOutIsEth && !validTokenOut) throw new Error('Enter a valid tokenOut address.');
+
+    const tokenInAddress = validTokenIn as `0x${string}`;
+    const tokenOutAddress = validTokenOut as `0x${string}`;
 
     const [tokenIn, tokenOut] = await Promise.all([
-      validateTokenOnchain(publicClient, validTokenIn),
-      validateTokenOnchain(publicClient, validTokenOut),
+      tokenInIsEth ? Promise.resolve(null) : validateTokenOnchain(publicClient, tokenInAddress),
+      tokenOutIsEth ? Promise.resolve(null) : validateTokenOnchain(publicClient, tokenOutAddress),
     ]);
 
     setTokenInMetadata(tokenIn);
@@ -196,6 +258,10 @@ function FungibleOrderbookView() {
     try {
       setOrdersLoading(true);
       const latestBlock = await publicClient.getBlockNumber();
+      
+      const recentBlockWindow = 10n;
+      const fromBlock = latestBlock > recentBlockWindow ? latestBlock - recentBlockWindow : 0n;
+      
       const logs = await publicClient.getLogs({
         address: FUNGIBLE_ORDERBOOK_CONTRACT.address,
         event: {
@@ -213,7 +279,7 @@ function FungibleOrderbookView() {
             { indexed: false, name: 'partialAllowed', type: 'bool' },
           ],
         },
-        fromBlock: 0n,
+        fromBlock: fromBlock,
         toBlock: latestBlock,
       });
 
@@ -312,47 +378,28 @@ function FungibleOrderbookView() {
 
     let amountIn: bigint;
     let amountOut: bigint;
-    let tokenIn: TokenMetadata;
-    let tokenOut: TokenMetadata;
+    let tokenIn: TokenMetadata | null;
+    let tokenOut: TokenMetadata | null;
 
     try {
       setBusy(true);
       setFeedback('Validating tokens...');
       ({ tokenIn, tokenOut } = await validateTokens());
 
-      amountIn = parseUnits(amountInInput, tokenIn.decimals);
-      amountOut = parseUnits(amountOutInput, tokenOut.decimals);
+      amountIn = parseUnits(amountInInput, tokenInIsEth ? 18 : tokenIn!.decimals);
+      amountOut = parseUnits(amountOutInput, tokenOutIsEth ? 18 : tokenOut!.decimals);
 
       if (amountIn <= 0n || amountOut <= 0n) {
         throw new Error('Amounts must be greater than zero.');
       }
 
       const salt = generateSalt();
-      // Resolve aToken addresses if the underlying token is registered in the lending pool
-      let usedTokenIn = validTokenIn as `0x${string}`;
-      let usedTokenOut = validTokenOut as `0x${string}`;
-      try {
-        if (publicClient) {
-          const aIn = (await publicClient.readContract({
-            address: LENDING_POOL_CONTRACT.address,
-            abi: LENDING_POOL_CONTRACT.abi,
-            functionName: 'getAToken',
-            args: [validTokenIn],
-          })) as `0x${string}`;
-          if (aIn && aIn !== '0x0000000000000000000000000000000000000000') usedTokenIn = aIn;
-
-          const aOut = (await publicClient.readContract({
-            address: LENDING_POOL_CONTRACT.address,
-            abi: LENDING_POOL_CONTRACT.abi,
-            functionName: 'getAToken',
-            args: [validTokenOut],
-          })) as `0x${string}`;
-          if (aOut && aOut !== '0x0000000000000000000000000000000000000000') usedTokenOut = aOut;
-        }
-      } catch (err) {
-        // If resolution fails, continue with the provided addresses
-        console.warn('Failed to resolve aToken addresses, using supplied token addresses', err);
-      }
+      const usedTokenIn = tokenInIsEth
+        ? ethTokenAddress
+        : await resolveOrderTokenAddress(validTokenIn as `0x${string}`);
+      const usedTokenOut = tokenOutIsEth
+        ? ethTokenAddress
+        : await resolveOrderTokenAddress(validTokenOut as `0x${string}`);
 
       const commitHash = keccak256(
         encodePacked(
@@ -580,14 +627,14 @@ function FungibleOrderbookView() {
                 <div key={order.orderId.toString()} style={{ padding: 12, border: '1px solid rgba(15, 23, 42, 0.08)', borderRadius: 12 }}>
                   <strong>Order #{order.orderId.toString()}</strong>
                   <p className="cm-hint">
-                    Token In: {tokenInMeta ? `${tokenInMeta.symbol} — ${tokenInMeta.name}` : shortAddress(order.tokenIn)} ({order.tokenIn})
+                    Token In: {formatTokenDisplay(order.tokenIn, tokenInMeta)} ({order.tokenIn})
                   </p>
                   <p className="cm-hint">
-                    Token Out: {tokenOutMeta ? `${tokenOutMeta.symbol} — ${tokenOutMeta.name}` : shortAddress(order.tokenOut)} ({order.tokenOut})
+                    Token Out: {formatTokenDisplay(order.tokenOut, tokenOutMeta)} ({order.tokenOut})
                   </p>
                   <p className="cm-hint">Side: {ORDER_SIDE_OPTIONS.find((option) => option.value === order.side)?.label ?? order.side}</p>
-                  <p className="cm-hint">Amount In: {tokenInMeta ? formatAmount(amountIn, tokenInMeta.decimals) : amountIn.toString()}</p>
-                  <p className="cm-hint">Amount Out: {tokenOutMeta ? formatAmount(amountOut, tokenOutMeta.decimals) : amountOut.toString()}</p>
+                  <p className="cm-hint">Amount In: {formatAmount(amountIn, tokenInMeta?.decimals ?? 18)}</p>
+                  <p className="cm-hint">Amount Out: {formatAmount(amountOut, tokenOutMeta?.decimals ?? 18)}</p>
                   <p className="cm-hint">Partial fills: {order.partialAllowed ? 'Yes' : 'No'}</p>
                   <p className="cm-hint">Status: {order.status === 2 ? 'Active' : order.status === 1 ? 'Matched' : 'Inactive'}</p>
                   <p className="cm-hint">Client: {shortAddress(order.client)}</p>
@@ -660,12 +707,25 @@ function FungibleOrderbookView() {
             id="token-in"
             placeholder="0x..."
             value={tokenInInput}
+            disabled={tokenInIsEth}
             onChange={(event) => { setTokenInInput(event.target.value.trim()); setTokenInMetadata(null); setTokenInError(false); }}
             onBlur={() => { if (validTokenIn) validateSingleToken(validTokenIn, setTokenInMetadata, setTokenInError); }}
             style={{ flex: 1, minWidth: 260 }}
           />
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={tokenInIsEth}
+              onChange={(event) => {
+                setTokenInIsEth(event.target.checked);
+                setTokenInMetadata(null);
+                setTokenInError(false);
+              }}
+            />
+            ETH
+          </label>
         </div>
-        <p className="cm-hint">{formatAddressLabel(tokenInMetadata, tokenInInput, !!validTokenIn, tokenInError)}</p>
+        <p className="cm-hint">{tokenInIsEth ? '✓ ETH selected' : formatAddressLabel(tokenInMetadata, tokenInInput, !!validTokenIn, tokenInError)}</p>
 
         <label htmlFor="token-out">Token to give</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -673,12 +733,25 @@ function FungibleOrderbookView() {
             id="token-out"
             placeholder="0x..."
             value={tokenOutInput}
+            disabled={tokenOutIsEth}
             onChange={(event) => { setTokenOutInput(event.target.value.trim()); setTokenOutMetadata(null); setTokenOutError(false); }}
             onBlur={() => { if (validTokenOut) validateSingleToken(validTokenOut, setTokenOutMetadata, setTokenOutError); }}
             style={{ flex: 1, minWidth: 260 }}
           />
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={tokenOutIsEth}
+              onChange={(event) => {
+                setTokenOutIsEth(event.target.checked);
+                setTokenOutMetadata(null);
+                setTokenOutError(false);
+              }}
+            />
+            ETH
+          </label>
         </div>
-        <p className="cm-hint">{formatAddressLabel(tokenOutMetadata, tokenOutInput, !!validTokenOut, tokenOutError)}</p>
+        <p className="cm-hint">{tokenOutIsEth ? '✓ ETH selected' : formatAddressLabel(tokenOutMetadata, tokenOutInput, !!validTokenOut, tokenOutError)}</p>
         <label htmlFor="amount-in">Amount to receive</label>
         <input
           id="amount-in"

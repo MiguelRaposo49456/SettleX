@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { isAddress, keccak256, encodePacked, decodeEventLog } from 'viem';
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
+import { isAddress, keccak256, encodePacked, decodeEventLog, formatUnits } from 'viem';
+import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi';
 
-import { NFT_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
+import { CUSTODIAN_CONTRACT, NFT_ORDERBOOK_CONTRACT, LENDING_POOL_CONTRACT } from '../constants/contracts';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation';
 import validateNftCollectionOnchain, { type NFTCollectionMetadata } from '../hooks/useNftValidation';
 
@@ -15,6 +15,9 @@ const FORM_TABS = [
   { id: 'listing', label: 'Create Listing' },
   { id: 'offer', label: 'Create Offer' },
 ] as const;
+
+const ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 function generateSalt(): `0x${string}` {
   const bytes = new Uint8Array(32);
@@ -103,6 +106,7 @@ function NFTOrderbookView() {
   const [listingTokenIdInput, setListingTokenIdInput] = useState('');
   const [listingPaymentType, setListingPaymentType] = useState<number>(0);
   const [listingPaymentTokenInput, setListingPaymentTokenInput] = useState('');
+  const [listingPaymentTokenIsEth, setListingPaymentTokenIsEth] = useState(false);
   const [listingPaymentAmount, setListingPaymentAmount] = useState('');
   const [listingPaymentTokenId, setListingPaymentTokenId] = useState('');
   const [listingCollectionMetadata, setListingCollectionMetadata] = useState<NFTCollectionMetadata | null>(null);
@@ -116,6 +120,7 @@ function NFTOrderbookView() {
   const [offerTokenIdInput, setOfferTokenIdInput] = useState('');
   const [offerType, setOfferType] = useState<number>(0);
   const [offerTokenInput, setOfferTokenInput] = useState('');
+  const [offerTokenIsEth, setOfferTokenIsEth] = useState(false);
   const [offerAmount, setOfferAmount] = useState('');
   const [offerTokenId, setOfferTokenId] = useState('');
   const [offerCollectionMetadata, setOfferCollectionMetadata] = useState<NFTCollectionMetadata | null>(null);
@@ -129,11 +134,53 @@ function NFTOrderbookView() {
   const validOfferCollection = isAddress(offerCollectionInput) ? (offerCollectionInput as `0x${string}`) : undefined;
   const validOfferToken = isAddress(offerTokenInput) ? (offerTokenInput as `0x${string}`) : undefined;
 
+  const { data: wethAddressRaw } = useReadContract({
+    ...CUSTODIAN_CONTRACT,
+    functionName: 'weth',
+    query: { enabled: true },
+  });
+
+  const wethAddress = (wethAddressRaw as `0x${string}` | undefined) ?? (ZERO_ADDRESS as `0x${string}`);
+
+  const { data: aWethAddressRaw } = useReadContract({
+    ...LENDING_POOL_CONTRACT,
+    functionName: 'getAToken',
+    args: [wethAddress],
+    query: { enabled: wethAddress !== (ZERO_ADDRESS as `0x${string}`) },
+  });
+
+  const ethTokenAddress = useMemo(() => {
+    const maybeAToken = aWethAddressRaw as `0x${string}` | undefined;
+    if (maybeAToken && maybeAToken.toLowerCase() !== ZERO_ADDRESS) return maybeAToken;
+    return ETH_SENTINEL as `0x${string}`;
+  }, [aWethAddressRaw]);
+
+  const resolveOrderTokenAddress = async (tokenAddress: `0x${string}`) => {
+    if (!publicClient) return tokenAddress;
+
+    try {
+      const aTokenAddress = (await publicClient.readContract({
+        address: LENDING_POOL_CONTRACT.address,
+        abi: LENDING_POOL_CONTRACT.abi,
+        functionName: 'getAToken',
+        args: [tokenAddress],
+      })) as `0x${string}`;
+
+      if (aTokenAddress && aTokenAddress.toLowerCase() !== ZERO_ADDRESS) {
+        return aTokenAddress;
+      }
+    } catch {
+      // Fall through to the supplied address when the token is not registered.
+    }
+
+    return tokenAddress;
+  };
+
   const canSubmitListing = Boolean(
     address &&
     validListingCollection &&
     listingTokenIdInput &&
-    validListingPaymentToken &&
+    (listingPaymentType === 0 ? (listingPaymentTokenIsEth || validListingPaymentToken) : validListingPaymentToken) &&
     (listingPaymentType === 0 ? listingPaymentAmount : listingPaymentTokenId) &&
     !busy,
   );
@@ -142,7 +189,7 @@ function NFTOrderbookView() {
     address &&
     validOfferCollection &&
     offerTokenIdInput &&
-    validOfferToken &&
+    (offerType === 0 ? (offerTokenIsEth || validOfferToken) : validOfferToken) &&
     (offerType === 0 ? offerAmount : offerTokenId) &&
     !busy,
   );
@@ -211,6 +258,22 @@ function NFTOrderbookView() {
     return nftMeta ? `${nftMeta.symbol} - ${nftMeta.name}` : shortAddress(addressValue);
   };
 
+
+  function formatTokenAmount(
+    amount: bigint,
+    tokenAddress: `0x${string}`,
+    tokenMetadataByAddress: Record<string, TokenMetadata | null>,
+    ethTokenAddress: `0x${string}`,
+  ): string {
+    const isEth =
+      tokenAddress.toLowerCase() === ETH_SENTINEL.toLowerCase() ||
+      tokenAddress.toLowerCase() === ethTokenAddress.toLowerCase();
+    const decimals = isEth
+      ? 18
+      : (tokenMetadataByAddress[tokenAddress.toLowerCase()]?.decimals ?? 18);
+    const full = formatUnits(amount, decimals);
+    return full.includes('.') ? full.replace(/\.?0+$/, '') : full;
+  }
   
 
   const refreshMarket = async () => {
@@ -233,7 +296,7 @@ function NFTOrderbookView() {
               { indexed: false, name: 'tokenId', type: 'uint256' },
             ],
           },
-          fromBlock: 0n,
+          fromBlock: 0xa00000n,
           toBlock: latestBlock,
         }),
         publicClient.getLogs({
@@ -248,7 +311,7 @@ function NFTOrderbookView() {
               { indexed: false, name: 'tokenId', type: 'uint256' },
             ],
           },
-          fromBlock: 0n,
+          fromBlock: 0xa00000n,
           toBlock: latestBlock,
         }),
         publicClient.getLogs({
@@ -261,7 +324,7 @@ function NFTOrderbookView() {
               { indexed: true, name: 'offerId', type: 'uint256' },
             ],
           },
-          fromBlock: 0n,
+          fromBlock: 0xa00000n,
           toBlock: latestBlock,
         }),
       ]);
@@ -460,13 +523,16 @@ function NFTOrderbookView() {
   };
 
   useEffect(() => {
-    void refreshMarket();
+    const timer = setTimeout(() => void refreshMarket(), 500);
+    return () => clearTimeout(timer);
   }, [publicClient, lastRevealHash]);
 
   useEffect(() => {
-    const refreshHandler = () => void refreshMarket();
+    const refreshHandler = () => {
+      if (document.visibilityState === 'visible') void refreshMarket();
+    };
     const storageHandler = (event: StorageEvent) => {
-      if (event.key === 'settlementCompleted') void refreshMarket();
+      if (event.key === 'settlementCompleted' && document.visibilityState === 'visible') void refreshMarket();
     };
 
     window.addEventListener('settlementCompleted', refreshHandler);
@@ -598,29 +664,13 @@ function NFTOrderbookView() {
 
       const salt = generateSalt();
       let usedListingCollection = validListingCollection as `0x${string}`;
-      let usedListingPaymentToken = validListingPaymentToken as `0x${string}`;
-      try {
-        if (publicClient) {
-          const aCollection = (await publicClient.readContract({
-            address: LENDING_POOL_CONTRACT.address,
-            abi: LENDING_POOL_CONTRACT.abi,
-            functionName: 'getAToken',
-            args: [validListingCollection],
-          })) as `0x${string}`;
-          if (aCollection && aCollection !== '0x0000000000000000000000000000000000000000') usedListingCollection = aCollection;
-
-          const aPayment = (await publicClient.readContract({
-            address: LENDING_POOL_CONTRACT.address,
-            abi: LENDING_POOL_CONTRACT.abi,
-            functionName: 'getAToken',
-            args: [validListingPaymentToken],
-          })) as `0x${string}`;
-          if (aPayment && aPayment !== '0x0000000000000000000000000000000000000000') usedListingPaymentToken = aPayment;
-        }
-      } catch (err) {
-        console.warn('Failed to resolve aToken addresses for listing, using supplied addresses', err);
-      }
-      const paymentAmount = listingPaymentType === 0 ? BigInt(listingPaymentAmount || 0) : 0n;
+      const usedListingPaymentToken = listingPaymentType === 0 && listingPaymentTokenIsEth
+        ? ethTokenAddress
+        : listingPaymentType === 0
+          ? await resolveOrderTokenAddress(validListingPaymentToken as `0x${string}`)
+          : (validListingPaymentToken as `0x${string}`);
+      const listingDecimals = listingPaymentTokenIsEth ? 18 : (listingPaymentTokenMetadata?.decimals ?? 18);
+      const paymentAmount = listingPaymentType === 0 ? BigInt(Math.round(parseFloat(listingPaymentAmount || '0') * 10 ** listingDecimals)) : 0n;
       const paymentTokenId = listingPaymentType === 1 ? BigInt(listingPaymentTokenId || 0) : 0n;
 
       // Compute commit hash: keccak256(abi.encode(msg.sender, collection, tokenId, paymentType, paymentToken, paymentAmount, paymentTokenId, salt))
@@ -699,6 +749,7 @@ function NFTOrderbookView() {
       setListingCollectionInput('');
       setListingTokenIdInput('');
       setListingPaymentTokenInput('');
+      setListingPaymentTokenIsEth(false);
       setListingPaymentAmount('');
       setListingPaymentTokenId('');
     } catch (error) {
@@ -721,29 +772,13 @@ function NFTOrderbookView() {
 
       const salt = generateSalt();
       let usedOfferCollection = validOfferCollection as `0x${string}`;
-      let usedOfferToken = validOfferToken as `0x${string}`;
-      try {
-        if (publicClient) {
-          const aCollection = (await publicClient.readContract({
-            address: LENDING_POOL_CONTRACT.address,
-            abi: LENDING_POOL_CONTRACT.abi,
-            functionName: 'getAToken',
-            args: [validOfferCollection],
-          })) as `0x${string}`;
-          if (aCollection && aCollection !== '0x0000000000000000000000000000000000000000') usedOfferCollection = aCollection;
-
-          const aOffer = (await publicClient.readContract({
-            address: LENDING_POOL_CONTRACT.address,
-            abi: LENDING_POOL_CONTRACT.abi,
-            functionName: 'getAToken',
-            args: [validOfferToken],
-          })) as `0x${string}`;
-          if (aOffer && aOffer !== '0x0000000000000000000000000000000000000000') usedOfferToken = aOffer;
-        }
-      } catch (err) {
-        console.warn('Failed to resolve aToken addresses for offer, using supplied addresses', err);
-      }
-      const offerAmountValue = offerType === 0 ? BigInt(offerAmount || 0) : 0n;
+      const usedOfferToken = offerType === 0 && offerTokenIsEth
+        ? ethTokenAddress
+        : offerType === 0
+          ? await resolveOrderTokenAddress(validOfferToken as `0x${string}`)
+          : (validOfferToken as `0x${string}`);
+      const offerDecimals = offerTokenIsEth ? 18 : (offerTokenMetadata?.decimals ?? 18);
+      const offerAmountValue = offerType === 0 ? BigInt(Math.round(parseFloat(offerAmount || '0') * 10 ** offerDecimals)) : 0n;
       const offerTokenIdValue = offerType === 1 ? BigInt(offerTokenId || 0) : 0n;
 
       // Compute commit hash: keccak256(abi.encode(msg.sender, collection, tokenId, offerType, offerToken, offerAmount, offerTokenId, salt))
@@ -822,6 +857,7 @@ function NFTOrderbookView() {
       setOfferCollectionInput('');
       setOfferTokenIdInput('');
       setOfferTokenInput('');
+      setOfferTokenIsEth(false);
       setOfferAmount('');
       setOfferTokenId('');
     } catch (error) {
@@ -988,7 +1024,7 @@ function NFTOrderbookView() {
                           </p>
                           {listing.paymentType === 0 ? (
                             <p className="cm-hint" style={{ marginTop: 4 }}>
-                              Wants ERC20 {getAddressDisplay(listing.paymentToken, 'token')} amount {listing.paymentAmount.toString()}
+                              Wants ERC20 {getAddressDisplay(listing.paymentToken, 'token')} — {formatTokenAmount(listing.paymentAmount, listing.paymentToken, tokenMetadataByAddress, ethTokenAddress)}
                             </p>
                           ) : (
                             <p className="cm-hint" style={{ marginTop: 4 }}>
@@ -1049,7 +1085,7 @@ function NFTOrderbookView() {
                           </p>
                           {offer.offerType === 0 ? (
                             <p className="cm-hint" style={{ marginTop: 4 }}>
-                              Offers ERC20 {getAddressDisplay(offer.offerToken, 'token')} amount {offer.offerAmount.toString()}
+                              Offers ERC20 {getAddressDisplay(offer.offerToken, 'token')} — {formatTokenAmount(offer.offerAmount, offer.offerToken, tokenMetadataByAddress, ethTokenAddress)}
                             </p>
                           ) : (
                             <p className="cm-hint" style={{ marginTop: 4 }}>
@@ -1192,10 +1228,27 @@ function NFTOrderbookView() {
                 }
               }}
               style={{ flex: 1, minWidth: 260 }}
+              disabled={listingPaymentType === 0 && listingPaymentTokenIsEth}
             />
+            {listingPaymentType === 0 ? (
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                <input
+                  type="checkbox"
+                  checked={listingPaymentTokenIsEth}
+                  onChange={(event) => {
+                    setListingPaymentTokenIsEth(event.target.checked);
+                    setListingPaymentError(false);
+                    setListingPaymentTokenMetadata(null);
+                  }}
+                />
+                ETH
+              </label>
+            ) : null}
           </div>
           <p className="cm-hint">
-            {listingPaymentType === 0
+            {listingPaymentType === 0 && listingPaymentTokenIsEth
+              ? '✓ ETH selected'
+              : listingPaymentType === 0
               ? formatTokenLabel(listingPaymentTokenMetadata, listingPaymentTokenInput, !!validListingPaymentToken, listingPaymentError)
               : formatNftLabel(listingPaymentCollectionMetadata, listingPaymentTokenInput, !!validListingPaymentToken, listingPaymentError)}
           </p>
@@ -1312,10 +1365,27 @@ function NFTOrderbookView() {
                 }
               }}
               style={{ flex: 1, minWidth: 260 }}
+              disabled={offerType === 0 && offerTokenIsEth}
             />
+            {offerType === 0 ? (
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                <input
+                  type="checkbox"
+                  checked={offerTokenIsEth}
+                  onChange={(event) => {
+                    setOfferTokenIsEth(event.target.checked);
+                    setOfferTokenError(false);
+                    setOfferTokenMetadata(null);
+                  }}
+                />
+                ETH
+              </label>
+            ) : null}
           </div>
           <p className="cm-hint">
-            {offerType === 0
+            {offerType === 0 && offerTokenIsEth
+              ? '✓ ETH selected'
+              : offerType === 0
               ? formatTokenLabel(offerTokenMetadata, offerTokenInput, !!validOfferToken, offerTokenError)
               : formatNftLabel(offerTokenCollectionMetadata, offerTokenInput, !!validOfferToken, offerTokenError)}
           </p>

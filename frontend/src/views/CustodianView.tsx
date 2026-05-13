@@ -136,7 +136,7 @@ function CustodianView() {
     ...CUSTODIAN_CONTRACT,
     functionName: 'balanceOf',
     args: address ? [address as `0x${string}`, balanceTokenAddress] : undefined,
-    query: { enabled: !!address },
+    query: { enabled: !!address, refetchInterval: 10_000 },
   });
 
   const depositedEth = depositedRaw ? formatEther(depositedRaw as bigint) : '0';

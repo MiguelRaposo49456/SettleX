@@ -61,7 +61,7 @@ function ComplianceManagerView() {
   const [trackedBatchId, setTrackedBatchId] = useState<number | null>(null);
   const [activeFeatureTab, setActiveFeatureTab] = useState<ComplianceFeatureTab>('core');
   const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
-  const [activityLogsLoading, setActivityLogsLoading] = useState(false);
+  //const [activityLogsLoading, setActivityLogsLoading] = useState(false);
 
   const validTokenAddress = useMemo(
     () => (isAddress(tokenAddressInput) ? (tokenAddressInput as `0x${string}`) : undefined),
@@ -152,22 +152,23 @@ function ComplianceManagerView() {
   const refreshActivityLogs = useCallback(async () => {
     if (!publicClient) return;
 
-    setActivityLogsLoading(true);
+    //setActivityLogsLoading(true);
     try {
       const nextLogs = await loadComplianceActivityLogs(publicClient);
       setActivityLogs(nextLogs);
     } catch (error) {
       console.warn('Failed to refresh compliance activity logs', error);
     } finally {
-      setActivityLogsLoading(false);
+      //setActivityLogsLoading(false);
     }
   }, [publicClient]);
 
-  useEffect(() => {
-    void refreshActivityLogs();
-    const interval = setInterval(() => void refreshActivityLogs(), 10000);
-    return () => clearInterval(interval);
-  }, [refreshActivityLogs]);
+  // Disabled: auto-load activity logs (expensive Alchemy Free-tier queries from block 0)
+  // useEffect(() => {
+  //   void refreshActivityLogs();
+  //   const interval = setInterval(() => void refreshActivityLogs(), 60000);
+  //   return () => clearInterval(interval);
+  // }, [refreshActivityLogs]);
 
   useEffect(() => {
     if (!isPoolAdmin && activeFeatureTab === 'liquidity') {
@@ -642,7 +643,7 @@ function ComplianceManagerView() {
 
   useEffect(() => {
     void fetchSettlementInfo();
-    const interval = setInterval(() => void fetchSettlementInfo(), 10000);
+    const interval = setInterval(() => void fetchSettlementInfo(), 15000);
     return () => clearInterval(interval);
   }, [fetchSettlementInfo]);
 
@@ -1067,11 +1068,12 @@ function ComplianceManagerView() {
           <div className="cm-log-header">
             <div>
               <h3>System Activity Log</h3>
-              <p className="cm-hint">Live on-chain events from the compliance, custodian, lending, trading, and settlement contracts.</p>
+              <p className="cm-hint">Temporarily disabled due to Alchemy Free-tier RPC limits. Queries large historical ranges from block 0.</p>
             </div>
             <div className="cm-actions-row">
-              <button type="button" onClick={() => void refreshActivityLogs()} disabled={activityLogsLoading}>
-                {activityLogsLoading ? 'Refreshing...' : 'Refresh'}
+              {/* Disabled: manual refresh also triggers expensive block 0 queries */}
+              <button type="button" onClick={() => void refreshActivityLogs()} disabled={true}>
+                Refresh (Disabled)
               </button>
             </div>
           </div>
