@@ -89,8 +89,7 @@ function FungibleOrderbookView() {
   const [tokenOutIsEth, setTokenOutIsEth] = useState(false);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const [lastCommitHash, setLastCommitHash] = useState<`0x${string}` | null>(null);
-  const [lastRevealHash, setLastRevealHash] = useState<`0x${string}` | null>(null);
+  
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [tokenMetadataByAddress, setTokenMetadataByAddress] = useState<Record<string, TokenMetadata | null>>({});
@@ -355,7 +354,7 @@ function FungibleOrderbookView() {
 
   useEffect(() => {
     void refreshOrders();
-  }, [publicClient, lastRevealHash]);
+  }, [publicClient]);
 
   useEffect(() => {
     const handler = () => void refreshOrders();
@@ -436,7 +435,6 @@ function FungibleOrderbookView() {
         throw new Error('Commit transaction succeeded but the commitId event was not found.');
       }
 
-      setLastCommitHash(commitTxHash);
       setFeedback('Waiting one block before reveal...');
       await mineOneBlockIfPossible(commitReceipt.blockNumber ?? 0n);
 
@@ -458,14 +456,13 @@ function FungibleOrderbookView() {
 
       await publicClient.waitForTransactionReceipt({ hash: revealTxHash });
 
-      setLastRevealHash(revealTxHash);
       setFeedback('Order submitted successfully.');
       setAmountInInput('');
       setAmountOutInput('');
       await refreshOrders();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Order submission failed';
-      setFeedback(message);
+      console.warn('Order submission failed', error);
+      setFeedback('Order submission failed');
     } finally {
       setBusy(false);
     }
@@ -494,8 +491,8 @@ function FungibleOrderbookView() {
       // Refresh orders to reflect cancellation
       await refreshOrders();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Cancel failed';
-      setFeedback(message);
+      console.warn('Cancel failed', err);
+      setFeedback('Cancel failed');
     } finally {
       setBusy(false);
       setPendingCancel(null);
@@ -561,8 +558,8 @@ function FungibleOrderbookView() {
       setFeedback('Take submitted successfully.');
       await refreshOrders();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Take failed';
-      setFeedback(message);
+      console.warn('Take failed', err);
+      setFeedback('Take failed');
     } finally {
       setBusy(false);
       setPendingTake(null);
@@ -801,21 +798,6 @@ function FungibleOrderbookView() {
         </p>
       </div>
 
-      {lastCommitHash ? (
-        <div className="cm-tx-box">
-          <p className="cm-hint">Last commit hash</p>
-          <p className="cm-tx-hash">{lastCommitHash}</p>
-        </div>
-      ) : null}
-
-      {lastRevealHash ? (
-        <div className="cm-tx-box">
-          <p className="cm-hint">Last reveal hash</p>
-          <p className="cm-tx-hash">{lastRevealHash}</p>
-        </div>
-      ) : null}
-
-      
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
 

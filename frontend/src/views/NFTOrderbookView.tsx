@@ -86,8 +86,6 @@ function NFTOrderbookView() {
   const [activeTab, setActiveTab] = useState<'listing' | 'offer'>('listing');
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const [lastCommitHash, setLastCommitHash] = useState<`0x${string}` | null>(null);
-  const [lastRevealHash, setLastRevealHash] = useState<`0x${string}` | null>(null);
   const [marketLoading, setMarketLoading] = useState(false);
   const [listings, setListings] = useState<NFTListingRecord[]>([]);
   const [offers, setOffers] = useState<NFTOfferRecord[]>([]);
@@ -525,7 +523,7 @@ function NFTOrderbookView() {
   useEffect(() => {
     const timer = setTimeout(() => void refreshMarket(), 500);
     return () => clearTimeout(timer);
-  }, [publicClient, lastRevealHash]);
+  }, [publicClient]);
 
   useEffect(() => {
     const refreshHandler = () => {
@@ -702,7 +700,6 @@ function NFTOrderbookView() {
       }
 
       const commitReceipt = await publicClient.waitForTransactionReceipt({ hash: commitTxHash });
-      setLastCommitHash(commitTxHash);
 
       setFeedback('Waiting one block before reveal...');
       await mineOneBlockIfPossible(commitReceipt.blockNumber ?? 0n);
@@ -744,7 +741,6 @@ function NFTOrderbookView() {
 
       await publicClient.waitForTransactionReceipt({ hash: revealTxHash });
 
-      setLastRevealHash(revealTxHash);
       setFeedback('Listing created successfully!');
       setListingCollectionInput('');
       setListingTokenIdInput('');
@@ -753,8 +749,8 @@ function NFTOrderbookView() {
       setListingPaymentAmount('');
       setListingPaymentTokenId('');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Listing submission failed';
-      setFeedback(message);
+      console.warn('Listing submission failed', error);
+      setFeedback('Listing submission failed');
     } finally {
       setBusy(false);
     }
@@ -810,7 +806,6 @@ function NFTOrderbookView() {
       }
 
       const commitReceipt = await publicClient.waitForTransactionReceipt({ hash: commitTxHash });
-      setLastCommitHash(commitTxHash);
 
       setFeedback('Waiting one block before reveal...');
       await mineOneBlockIfPossible(commitReceipt.blockNumber ?? 0n);
@@ -852,7 +847,6 @@ function NFTOrderbookView() {
 
       await publicClient.waitForTransactionReceipt({ hash: revealTxHash });
 
-      setLastRevealHash(revealTxHash);
       setFeedback('Offer created successfully!');
       setOfferCollectionInput('');
       setOfferTokenIdInput('');
@@ -861,8 +855,8 @@ function NFTOrderbookView() {
       setOfferAmount('');
       setOfferTokenId('');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Offer submission failed';
-      setFeedback(message);
+      console.warn('Offer submission failed', error);
+      setFeedback('Offer submission failed');
     } finally {
       setBusy(false);
     }
@@ -891,8 +885,8 @@ function NFTOrderbookView() {
       // Refresh market to reflect cancellation
       await refreshMarket();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Cancel failed';
-      setFeedback(message);
+      console.warn('Cancel failed', err);
+      setFeedback('Cancel failed');
     } finally {
       setBusy(false);
       setPendingCancelListingId(null);
@@ -922,8 +916,8 @@ function NFTOrderbookView() {
       // Refresh market to reflect cancellation
       await refreshMarket();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Cancel failed';
-      setFeedback(message);
+      console.warn('Cancel failed', err);
+      setFeedback('Cancel failed');
     } finally {
       setBusy(false);
       setPendingCancelOfferId(null);
@@ -1425,15 +1419,6 @@ function NFTOrderbookView() {
           </div>
         </div>
       )}
-
-      {lastCommitHash ? (
-        <div className="cm-tx-box">
-          <p className="cm-hint">Last commit hash</p>
-          <p className="cm-tx-hash">{lastCommitHash}</p>
-        </div>
-      ) : null}
-
-      
 
       {feedback ? <p className="cm-feedback">{feedback}</p> : null}
     </section>

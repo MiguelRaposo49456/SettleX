@@ -363,19 +363,7 @@ function CustodianView() {
       setTokenFeedback('Token deposited successfully');
     } catch (err: any) {
       console.error('Deposit error:', err);
-      let errorMsg = 'ERC20 deposit failed';
-      if (err?.shortMessage) {
-        errorMsg = err.shortMessage;
-      } else if (err?.reason) {
-        errorMsg = err.reason;
-      } else if (err?.message) {
-        errorMsg = err.message;
-      }
-      // Check for specific contract errors
-      if (err?.data?.message) {
-        errorMsg += ` (${err.data.message})`;
-      }
-      setTokenFeedback(errorMsg);
+      setTokenFeedback('ERC20 deposit failed');
     } finally {
       setTokenBusy(false);
     }

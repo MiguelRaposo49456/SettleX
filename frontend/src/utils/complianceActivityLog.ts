@@ -26,6 +26,7 @@ export type ActivityLogEntry = {
 };
 
 const ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+const CHUNK_SIZE = 49_000n;
 
 function shortAddress(address?: string) {
   if (!address) return '-';
@@ -199,12 +200,12 @@ export async function loadComplianceActivityLogs(publicClient: any) {
   const latestBlock = await publicClient.getBlockNumber();
 
   const [complianceLogs, custodianLogs, lendingLogs, fungibleLogs, nftLogs, settlementLogs] = await Promise.all([
-    publicClient.getLogs({ address: COMPLIANCE_MANAGER_CONTRACT.address, fromBlock: 0n, toBlock: latestBlock }),
-    publicClient.getLogs({ address: CUSTODIAN_CONTRACT.address, fromBlock: 0n, toBlock: latestBlock }),
-    publicClient.getLogs({ address: LENDING_POOL_CONTRACT.address, fromBlock: 0n, toBlock: latestBlock }),
-    publicClient.getLogs({ address: FUNGIBLE_ORDERBOOK_CONTRACT.address, fromBlock: 0n, toBlock: latestBlock }),
-    publicClient.getLogs({ address: NFT_ORDERBOOK_CONTRACT.address, fromBlock: 0n, toBlock: latestBlock }),
-    publicClient.getLogs({ address: SETTLEMENT_ENGINE_CONTRACT.address, fromBlock: 0n, toBlock: latestBlock }),
+    publicClient.getLogs({ address: COMPLIANCE_MANAGER_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
+    publicClient.getLogs({ address: CUSTODIAN_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
+    publicClient.getLogs({ address: LENDING_POOL_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
+    publicClient.getLogs({ address: FUNGIBLE_ORDERBOOK_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
+    publicClient.getLogs({ address: NFT_ORDERBOOK_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
+    publicClient.getLogs({ address: SETTLEMENT_ENGINE_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
   ]);
 
   const sources = [

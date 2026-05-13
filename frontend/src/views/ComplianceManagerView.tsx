@@ -35,9 +35,6 @@ function ComplianceManagerView() {
   const [selectedStatus, setSelectedStatus] = useState<number>(0);
   const [busyAction, setBusyAction] = useState<string>('idle');
   const [feedback, setFeedback] = useState<string>('');
-  const [lastTxHash, setLastTxHash] = useState<`0x${string}` | null>(null);
-  const [lastTxStatus, setLastTxStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
-  const [lastTxBlock, setLastTxBlock] = useState<bigint | null>(null);
   const [selectedPoolToken, setSelectedPoolToken] = useState<`0x${string}` | ''>('');
   const [liquidityAmount, setLiquidityAmount] = useState('');
   const [selectedYieldPoolToken, setSelectedYieldPoolToken] = useState<`0x${string}` | ''>('');
@@ -61,7 +58,7 @@ function ComplianceManagerView() {
   const [trackedBatchId, setTrackedBatchId] = useState<number | null>(null);
   const [activeFeatureTab, setActiveFeatureTab] = useState<ComplianceFeatureTab>('core');
   const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
-  //const [activityLogsLoading, setActivityLogsLoading] = useState(false);
+  const [activityLogsLoading, setActivityLogsLoading] = useState(false);
 
   const validTokenAddress = useMemo(
     () => (isAddress(tokenAddressInput) ? (tokenAddressInput as `0x${string}`) : undefined),
@@ -152,23 +149,23 @@ function ComplianceManagerView() {
   const refreshActivityLogs = useCallback(async () => {
     if (!publicClient) return;
 
-    //setActivityLogsLoading(true);
+    setActivityLogsLoading(true);
     try {
       const nextLogs = await loadComplianceActivityLogs(publicClient);
       setActivityLogs(nextLogs);
     } catch (error) {
       console.warn('Failed to refresh compliance activity logs', error);
     } finally {
-      //setActivityLogsLoading(false);
+      setActivityLogsLoading(false);
     }
   }, [publicClient]);
 
-  // Disabled: auto-load activity logs (expensive Alchemy Free-tier queries from block 0)
-  // useEffect(() => {
-  //   void refreshActivityLogs();
-  //   const interval = setInterval(() => void refreshActivityLogs(), 60000);
-  //   return () => clearInterval(interval);
-  // }, [refreshActivityLogs]);
+
+  useEffect(() => {
+     void refreshActivityLogs();
+     const interval = setInterval(() => void refreshActivityLogs(), 60000);
+     return () => clearInterval(interval);
+  }, [refreshActivityLogs]);
 
   useEffect(() => {
     if (!isPoolAdmin && activeFeatureTab === 'liquidity') {
@@ -273,20 +270,22 @@ function ComplianceManagerView() {
     try {
       setBusyAction(actionKey);
       setFeedback('');
-      setLastTxStatus('pending');
-      setLastTxBlock(null);
 
       const txHash = (await action()) as `0x${string}`;
-      setLastTxHash(txHash);
 
       if (!publicClient) {
-        throw new Error('No public client available to track transaction receipt.');
+        console.warn('No public client available to track transaction receipt.');
+      } else {
+        try {
+          const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+          if (receipt.status === 'success') {
+            setFeedback(successMessage);
+          }
+        } catch (err) {
+          console.warn('Failed to fetch transaction receipt', err);
+        }
       }
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-      setLastTxStatus(receipt.status === 'success' ? 'confirmed' : 'failed');
-      setLastTxBlock(receipt.blockNumber ?? null);
-      setFeedback(successMessage);
       await Promise.all([
         refetchPaused(),
         refetchOperator(),
@@ -297,9 +296,7 @@ function ComplianceManagerView() {
       ]);
       void refreshActivityLogs();
     } catch (error) {
-      setLastTxStatus('failed');
-      const message = error instanceof Error ? error.message : 'Unknown transaction error';
-      setFeedback(message);
+      console.warn('Action failed', error);
     } finally {
       setBusyAction('idle');
     }
@@ -1068,12 +1065,10 @@ function ComplianceManagerView() {
           <div className="cm-log-header">
             <div>
               <h3>System Activity Log</h3>
-              <p className="cm-hint">Temporarily disabled due to Alchemy Free-tier RPC limits. Queries large historical ranges from block 0.</p>
             </div>
             <div className="cm-actions-row">
-              {/* Disabled: manual refresh also triggers expensive block 0 queries */}
-              <button type="button" onClick={() => void refreshActivityLogs()} disabled={true}>
-                Refresh (Disabled)
+              <button type="button" onClick={() => void refreshActivityLogs()} disabled={activityLogsLoading}>
+                {activityLogsLoading ? 'Refreshing...' : 'Refresh'}
               </button>
             </div>
           </div>
@@ -1097,17 +1092,6 @@ function ComplianceManagerView() {
               ))
             )}
           </div>
-        </div>
-      ) : null}
-
-      {lastTxHash ? (
-        <div className="cm-tx-box">
-          <p className="cm-hint">Last transaction hash</p>
-          <p className="cm-tx-hash">{lastTxHash}</p>
-          <p className="cm-hint">
-            Status: {lastTxStatus}
-            {lastTxBlock !== null ? ` (mined in block ${lastTxBlock.toString()})` : ''}
-          </p>
         </div>
       ) : null}
 
