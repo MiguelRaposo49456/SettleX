@@ -54,8 +54,7 @@ function CustodianView() {
   const [withdrawTokenFeedback, setWithdrawTokenFeedback] = useState('');
   const [withdrawNftBusy, setWithdrawNftBusy] = useState(false);
   const [withdrawNftFeedback, setWithdrawNftFeedback] = useState('');
-  const [errorModalMessage, setErrorModalMessage] = useState('');
-  const [showErrorModal, setShowErrorModal] = useState(false);
+  
   const [activeTab, setActiveTab] = useState<CustodianTab>('eth');
 
   void feedback;
@@ -66,8 +65,9 @@ function CustodianView() {
   void withdrawNftFeedback;
 
   const presentError = (message: string) => {
-    setErrorModalMessage(message);
-    setShowErrorModal(true);
+    // previously opened a modal; now only log to console to avoid interruptive popups
+    // eslint-disable-next-line no-console
+    console.error(message);
   };
 
   const parsedNftTokenId = useMemo(() => {
@@ -83,10 +83,11 @@ function CustodianView() {
     ...CUSTODIAN_CONTRACT,
     functionName: 'nftBalanceOf',
     args: address && selectedNftCollection && parsedNftTokenId !== undefined ? [address as `0x${string}`, selectedNftCollection.address, parsedNftTokenId] : undefined,
-    query: { enabled: !!address && !!selectedNftCollection && parsedNftTokenId !== undefined },
+    query: { enabled: !!address && !!selectedNftCollection && parsedNftTokenId !== undefined, refetchInterval: 10_000 },
   });
 
   const nftHeld = Boolean((nftBalanceRaw as readonly [boolean, boolean] | undefined)?.[0]);
+  const nftLocked = Boolean((nftBalanceRaw as readonly [boolean, boolean] | undefined)?.[1]);
 
   const { data: wethAddressRaw } = useReadContract({
     ...CUSTODIAN_CONTRACT,
@@ -139,7 +140,15 @@ function CustodianView() {
     query: { enabled: !!address, refetchInterval: 10_000 },
   });
 
-  const depositedEth = depositedRaw ? formatEther(depositedRaw as bigint) : '0';
+  const { data: fullEthBalanceRaw, refetch: refetchFullEthBalance } = useReadContract({
+    ...CUSTODIAN_CONTRACT,
+    functionName: 'fullBalanceOf',
+    args: address ? [address as `0x${string}`, balanceTokenAddress] : undefined,
+    query: { enabled: !!address, refetchInterval: 10_000 },
+  });
+
+  const ethAvailable = formatEther((fullEthBalanceRaw as readonly [bigint, bigint] | undefined)?.[0] ?? 0n);
+  const ethLocked = formatEther((fullEthBalanceRaw as readonly [bigint, bigint] | undefined)?.[1] ?? 0n);
   const hasDepositedEth = Boolean(depositedRaw && (depositedRaw as bigint) > 0n);
   const canDepositEth = useMemo(() => {
     const trimmed = ethAmount.trim();
@@ -202,6 +211,7 @@ function CustodianView() {
       setWithdrawEthAmount('');
       await refetchAToken();
       await refetchDeposited();
+      await refetchFullEthBalance?.();
     } catch (error) {
       showContractError(error, 'ETH withdraw failed', presentError);
     } finally {
@@ -228,6 +238,7 @@ function CustodianView() {
       setEthAmount('');
       await refetchAToken();
       await refetchDeposited();
+      await refetchFullEthBalance?.();
     } catch (error) {
       showContractError(error, 'Unknown deposit error', presentError);
     } finally {
@@ -256,7 +267,19 @@ function CustodianView() {
     query: { enabled: !!address && !!selectedBalanceKey },
   });
 
-  const depositedToken = depositedTokenRaw && selectedToken ? formatUnits(depositedTokenRaw as bigint, selectedToken.decimals) : '0';
+  const { data: fullTokenBalanceRaw, refetch: refetchFullTokenBalance } = useReadContract({
+    ...CUSTODIAN_CONTRACT,
+    functionName: 'fullBalanceOf',
+    args: address && selectedBalanceKey ? [address as `0x${string}`, selectedBalanceKey] : undefined,
+    query: { enabled: !!address && !!selectedBalanceKey, refetchInterval: 10_000 },
+  });
+
+  const tokenAvailable = selectedToken
+    ? formatUnits((fullTokenBalanceRaw as readonly [bigint, bigint] | undefined)?.[0] ?? 0n, selectedToken.decimals)
+    : '0';
+  const tokenLocked = selectedToken
+    ? formatUnits((fullTokenBalanceRaw as readonly [bigint, bigint] | undefined)?.[1] ?? 0n, selectedToken.decimals)
+    : '0';
   const hasDepositedToken = Boolean(depositedTokenRaw && (depositedTokenRaw as bigint) > 0n);
   const canDepositToken = useMemo(() => {
     const trimmed = tokenAmount.trim();
@@ -318,6 +341,7 @@ function CustodianView() {
       setWithdrawTokenAmount('');
       await refetchATokenForSelected();
       await refetchDepositedToken();
+      await refetchFullTokenBalance?.();
     } catch (error) {
       showContractError(error, 'Token withdraw failed', presentError);
     } finally {
@@ -360,6 +384,7 @@ function CustodianView() {
       setTokenAmount('');
       await refetchATokenForSelected();
       await refetchDepositedToken();
+      await refetchFullTokenBalance?.();
       setTokenFeedback('Token deposited successfully');
     } catch (err: any) {
       console.error('Deposit error:', err);
@@ -533,18 +558,20 @@ function CustodianView() {
         </div>
         <div className="cm-status-card">
           <span>Your deposited ETH</span>
-          <strong>{depositedEth} ETH</strong>
+          <strong style={{ display: 'block' }}>{ethAvailable} available</strong>
+          <strong style={{ display: 'block' }}>{ethLocked} locked</strong>
         </div>
         {activeTab === 'erc20' && selectedToken ? (
           <div className="cm-status-card">
             <span>Your deposited {selectedToken.symbol}</span>
-            <strong>{depositedToken} {selectedToken.symbol}</strong>
+            <strong style={{ display: 'block' }}>{tokenAvailable} available</strong>
+            <strong style={{ display: 'block' }}>{tokenLocked} locked</strong>
           </div>
         ) : null}
           {activeTab === 'nft' && selectedNftCollection && parsedNftTokenId !== undefined ? (
             <div className="cm-status-card">
               <span>NFT deposited?</span>
-              <strong>{nftHeld ? 'Yes' : 'No'}</strong>
+              <strong>{(nftHeld || nftLocked) ? `Yes ${nftLocked ? '(locked)' : '(available)'}` : 'No'}</strong>
             </div>
           ) : null}
       </div>
@@ -752,45 +779,7 @@ function CustodianView() {
 
       
 
-      {showErrorModal ? (
-        <div
-          role="presentation"
-          onClick={() => setShowErrorModal(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(15, 23, 42, 0.55)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 10000,
-            padding: 16,
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Transaction error"
-            onClick={(event) => event.stopPropagation()}
-            style={{
-              width: 'min(520px, 100%)',
-              borderRadius: 16,
-              background: '#ffffff',
-              boxShadow: '0 24px 80px rgba(15, 23, 42, 0.35)',
-              padding: 20,
-              border: '1px solid rgba(15, 23, 42, 0.08)',
-            }}
-          >
-            <h3 style={{ margin: '0 0 12px 0' }}>Transaction error</h3>
-            <p style={{ margin: '0 0 16px 0', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{errorModalMessage}</p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setShowErrorModal(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {/* error modal removed to avoid interruptive popups; errors are logged to console */}
 
     </section>
   );
