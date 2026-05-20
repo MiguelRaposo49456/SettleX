@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "hardhat:eval": "hardhat run scripts/hardhat-eval.ts",
+    "sepolia:eval": "hardhat run scripts/sepolia-eval.ts"
   },
   "keywords": [],
   "author": "",
