@@ -111,6 +111,13 @@ function ComplianceManagerView() {
     query: { enabled: !!address },
   });
 
+  const { data: selectedOperatorRaw, isFetching: selectedOperatorLoading } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'hasOperatorRole',
+    args: validOperatorAddress ? [validOperatorAddress] : undefined,
+    query: { enabled: !!validOperatorAddress },
+  });
+
   const { data: tokenBlacklistedRaw, refetch: refetchTokenStatus } = useReadContract({
     ...COMPLIANCE_MANAGER_CONTRACT,
     functionName: 'blacklistedTokens',
@@ -137,6 +144,15 @@ function ComplianceManagerView() {
   const paused = Boolean(pausedRaw);
   const isOperator = Boolean(isOperatorRaw);
   const isComplianceAdmin = Boolean(isComplianceAdminRaw);
+  const selectedOperatorStatus =
+    !validOperatorAddress
+      ? 'Enter an address to check operator status.'
+      : selectedOperatorLoading
+        ? 'Checking operator status...'
+        : selectedOperatorRaw
+          ? 'This address is already an Operator.'
+          : 'This address is not an Operator yet.';
+  const selectedOperatorIsActive = Boolean(selectedOperatorRaw);
   const tokenBlacklisted = Boolean(tokenBlacklistedRaw);
   const currentUserStatus = Number(userStatusRaw ?? 0);
   const supportedTokens = (supportedTokensRaw as `0x${string}`[]) || [];
@@ -1008,18 +1024,33 @@ function ComplianceManagerView() {
             value={operatorAddressInput}
             onChange={(event) => setOperatorAddressInput(event.target.value.trim())}
           />
+          <p className="cm-hint">{selectedOperatorStatus}</p>
           <p className="cm-hint">Only compliance admins can grant/revoke operator role.</p>
 
           <div className="cm-actions-row">
             <button
               onClick={grantOperatorRole}
-              disabled={busyAction !== 'idle' || !isComplianceAdmin || !validOperatorAddress || !operatorRole}
+              disabled={
+                busyAction !== 'idle' ||
+                !isComplianceAdmin ||
+                !validOperatorAddress ||
+                !operatorRole ||
+                selectedOperatorLoading ||
+                selectedOperatorIsActive
+              }
             >
               Add Operator
             </button>
             <button
               onClick={revokeOperatorRole}
-              disabled={busyAction !== 'idle' || !isComplianceAdmin || !validOperatorAddress || !operatorRole}
+              disabled={
+                busyAction !== 'idle' ||
+                !isComplianceAdmin ||
+                !validOperatorAddress ||
+                !operatorRole ||
+                selectedOperatorLoading ||
+                !selectedOperatorIsActive
+              }
             >
               Remove Operator
             </button>
