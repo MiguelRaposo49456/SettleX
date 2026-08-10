@@ -6,22 +6,29 @@ import ComplianceManagerView from './views/ComplianceManagerView';
 import CustodianView from './views/CustodianView';
 import FungibleOrderbookView from './views/FungibleOrderbookView';
 import NFTOrderbookView from './views/NFTOrderbookView';
+import MarketHistoryView from './views/MarketHistoryView.tsx';
 import { COMPLIANCE_MANAGER_CONTRACT } from './constants/contracts';
 import './App.css';
 
-type ViewId = 'overview' | 'custodian' | 'fungible-orderbook' | 'nft-orderbook' | 'compliance';
+type ViewId = 'overview' | 'custodian' | 'fungible-orderbook' | 'nft-orderbook' | 'market-history' | 'compliance';
 
 const ALL_VIEWS: Array<{ id: ViewId; label: string }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'custodian', label: 'Custodian' },
   { id: 'fungible-orderbook', label: 'Fungible Orderbook' },
   { id: 'nft-orderbook', label: 'NFT Orderbook' },
+  { id: 'market-history', label: 'Market History' },
   { id: 'compliance', label: 'Compliance Manager' },
 ];
 
 function App() {
   const { address, isConnected } = useAccount();
   const [activeView, setActiveView] = useState<ViewId>('overview');
+
+  const { data: defaultAdminRoleRaw } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'DEFAULT_ADMIN_ROLE',
+  });
 
   const { data: isOperatorRaw } = useReadContract({
     ...COMPLIANCE_MANAGER_CONTRACT,
@@ -30,7 +37,15 @@ function App() {
     query: { enabled: !!address },
   });
 
+  const { data: isComplianceAdminRaw } = useReadContract({
+    ...COMPLIANCE_MANAGER_CONTRACT,
+    functionName: 'hasRole',
+    args: address && defaultAdminRoleRaw ? [defaultAdminRoleRaw as `0x${string}`, address as `0x${string}`] : undefined,
+    query: { enabled: !!address && !!defaultAdminRoleRaw },
+  });
+
   const isOperator = useMemo(() => Boolean(isOperatorRaw), [isOperatorRaw]);
+  const isComplianceAdmin = useMemo(() => Boolean(isComplianceAdminRaw), [isComplianceAdminRaw]);
 
   const VIEWS = useMemo(
     () => ALL_VIEWS.filter((view) => view.id !== 'compliance' || isOperator),
@@ -57,7 +72,6 @@ function App() {
           </section>
         ) : (
           <section className="dashboard">
-            <p>Connected address: <code>{address}</code></p>
             <nav className="section-tabs" aria-label="Contract views">
               {VIEWS.map((view) => (
                 <button
@@ -83,6 +97,9 @@ function App() {
             </section>
             <section hidden={activeView !== 'nft-orderbook'}>
               <NFTOrderbookView />
+            </section>
+            <section hidden={activeView !== 'market-history'}>
+              <MarketHistoryView isRegulatorAllowed={isComplianceAdmin} />
             </section>
             <section hidden={activeView !== 'compliance'}>
               <ComplianceManagerView />

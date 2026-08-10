@@ -20,7 +20,9 @@ export type ActivityLogEntry = {
   source: ActivityLogSource;
   eventName: string;
   summary: string;
+  args: Record<string, unknown>;
   blockNumber: bigint;
+  blockTimestamp?: bigint;
   logIndex: number;
   txHash?: `0x${string}`;
 };
@@ -198,14 +200,15 @@ function getActivitySummary(source: ActivityLogSource, eventName: string, args: 
 
 export async function loadComplianceActivityLogs(publicClient: any) {
   const latestBlock = await publicClient.getBlockNumber();
+  const fromBlock = latestBlock > CHUNK_SIZE ? latestBlock - CHUNK_SIZE : 0n;
 
   const [complianceLogs, custodianLogs, lendingLogs, fungibleLogs, nftLogs, settlementLogs] = await Promise.all([
-    publicClient.getLogs({ address: COMPLIANCE_MANAGER_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
-    publicClient.getLogs({ address: CUSTODIAN_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
-    publicClient.getLogs({ address: LENDING_POOL_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
-    publicClient.getLogs({ address: FUNGIBLE_ORDERBOOK_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
-    publicClient.getLogs({ address: NFT_ORDERBOOK_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
-    publicClient.getLogs({ address: SETTLEMENT_ENGINE_CONTRACT.address, fromBlock: latestBlock - CHUNK_SIZE, toBlock: latestBlock }),
+    publicClient.getLogs({ address: COMPLIANCE_MANAGER_CONTRACT.address, fromBlock, toBlock: latestBlock }),
+    publicClient.getLogs({ address: CUSTODIAN_CONTRACT.address, fromBlock, toBlock: latestBlock }),
+    publicClient.getLogs({ address: LENDING_POOL_CONTRACT.address, fromBlock, toBlock: latestBlock }),
+    publicClient.getLogs({ address: FUNGIBLE_ORDERBOOK_CONTRACT.address, fromBlock, toBlock: latestBlock }),
+    publicClient.getLogs({ address: NFT_ORDERBOOK_CONTRACT.address, fromBlock, toBlock: latestBlock }),
+    publicClient.getLogs({ address: SETTLEMENT_ENGINE_CONTRACT.address, fromBlock, toBlock: latestBlock }),
   ]);
 
   const sources = [
@@ -234,6 +237,7 @@ export async function loadComplianceActivityLogs(publicClient: any) {
           source,
           eventName: String(decoded.eventName),
           summary: getActivitySummary(source, String(decoded.eventName), args),
+          args,
           blockNumber: log.blockNumber ?? 0n,
           logIndex: Number(log.logIndex ?? 0n),
           txHash: log.transactionHash,
@@ -249,5 +253,23 @@ export async function loadComplianceActivityLogs(publicClient: any) {
     return right.logIndex - left.logIndex;
   });
 
-  return nextLogs.slice(0, 250);
+  const recentLogs = nextLogs.slice(0, 250);
+  const uniqueBlockNumbers = [...new Set(recentLogs.map((entry) => entry.blockNumber.toString()))];
+  const blockTimestamps = new Map<string, bigint>();
+
+  await Promise.all(
+    uniqueBlockNumbers.map(async (blockNumber) => {
+      try {
+        const block = await publicClient.getBlock({ blockNumber: BigInt(blockNumber) });
+        blockTimestamps.set(blockNumber, block.timestamp);
+      } catch {
+        blockTimestamps.set(blockNumber, 0n);
+      }
+    }),
+  );
+
+  return recentLogs.map((entry) => ({
+    ...entry,
+    blockTimestamp: blockTimestamps.get(entry.blockNumber.toString()),
+  }));
 }

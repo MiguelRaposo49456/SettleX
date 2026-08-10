@@ -6,7 +6,6 @@ import { COMPLIANCE_MANAGER_CONTRACT, LENDING_POOL_CONTRACT, SETTLEMENT_ENGINE_C
 import ATokenABI from '../abis/AToken.json';
 import MockERC20 from '../abis/MockERC20.json';
 import validateTokenOnchain, { type TokenMetadata } from '../hooks/useTokenValidation';
-import { type ActivityLogEntry, loadComplianceActivityLogs } from '../utils/complianceActivityLog';
 
 const USER_STATUS_OPTIONS = [
   { value: 0, label: 'Allowed' },
@@ -14,7 +13,7 @@ const USER_STATUS_OPTIONS = [
   { value: 2, label: 'Blacklisted' },
 ] as const;
 
-type ComplianceFeatureTab = 'core' | 'liquidity' | 'settlement' | 'operators' | 'logs';
+type ComplianceFeatureTab = 'core' | 'liquidity' | 'settlement' | 'operators';
 
 function formatAddressLabel(metadata: TokenMetadata | null, input: string, isValid: boolean, fetchError = false) {
   if (!input) return '';
@@ -52,13 +51,11 @@ function ComplianceManagerView() {
   const [poolTokenDisplayNames, setPoolTokenDisplayNames] = useState<Record<string, string>>({});
   const [settlementWindow, setSettlementWindow] = useState<number | null>(null);
   const [newSettlementWindow, setNewSettlementWindow] = useState('');
-  
+
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [settlementLoaded, setSettlementLoaded] = useState(false);
   const [trackedBatchId, setTrackedBatchId] = useState<number | null>(null);
   const [activeFeatureTab, setActiveFeatureTab] = useState<ComplianceFeatureTab>('core');
-  const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
-  const [activityLogsLoading, setActivityLogsLoading] = useState(false);
 
   const validTokenAddress = useMemo(
     () => (isAddress(tokenAddressInput) ? (tokenAddressInput as `0x${string}`) : undefined),
@@ -145,27 +142,6 @@ function ComplianceManagerView() {
   const supportedTokens = (supportedTokensRaw as `0x${string}`[]) || [];
   const poolAdmin = (lendingPoolAdminRaw as `0x${string}`) || undefined;
   const isPoolAdmin = Boolean(address && poolAdmin && (address as string).toLowerCase() === poolAdmin.toLowerCase());
-
-  const refreshActivityLogs = useCallback(async () => {
-    if (!publicClient) return;
-
-    setActivityLogsLoading(true);
-    try {
-      const nextLogs = await loadComplianceActivityLogs(publicClient);
-      setActivityLogs(nextLogs);
-    } catch (error) {
-      console.warn('Failed to refresh compliance activity logs', error);
-    } finally {
-      setActivityLogsLoading(false);
-    }
-  }, [publicClient]);
-
-
-  useEffect(() => {
-     void refreshActivityLogs();
-     const interval = setInterval(() => void refreshActivityLogs(), 60000);
-     return () => clearInterval(interval);
-  }, [refreshActivityLogs]);
 
   useEffect(() => {
     if (!isPoolAdmin && activeFeatureTab === 'liquidity') {
@@ -294,7 +270,6 @@ function ComplianceManagerView() {
         refetchUserStatus(),
         refetchSupportedTokens(),
       ]);
-      void refreshActivityLogs();
     } catch (error) {
       console.warn('Action failed', error);
     } finally {
@@ -741,14 +716,6 @@ function ComplianceManagerView() {
         >
           Operators
         </button>
-        <button
-          type="button"
-          className={activeFeatureTab === 'logs' ? 'active' : ''}
-          onClick={() => setActiveFeatureTab('logs')}
-          aria-pressed={activeFeatureTab === 'logs'}
-        >
-          Logs
-        </button>
       </nav>
 
       {activeFeatureTab === 'core' ? (
@@ -1056,41 +1023,6 @@ function ComplianceManagerView() {
             >
               Remove Operator
             </button>
-          </div>
-        </div>
-      ) : null}
-
-      {activeFeatureTab === 'logs' ? (
-        <div className="cm-block">
-          <div className="cm-log-header">
-            <div>
-              <h3>System Activity Log</h3>
-            </div>
-            <div className="cm-actions-row">
-              <button type="button" onClick={() => void refreshActivityLogs()} disabled={activityLogsLoading}>
-                {activityLogsLoading ? 'Refreshing...' : 'Refresh'}
-              </button>
-            </div>
-          </div>
-
-          <div className="cm-log-list" aria-live="polite">
-            {activityLogs.length === 0 ? (
-              <p className="cm-log-empty">No activity has been recorded yet.</p>
-            ) : (
-              activityLogs.map((entry) => (
-                <article key={entry.id} className="cm-log-entry">
-                  <div className="cm-log-entry-top">
-                    <strong>{entry.eventName}</strong>
-                    <span>{entry.source}</span>
-                  </div>
-                  <p className="cm-log-summary">{entry.summary}</p>
-                  <p className="cm-log-meta">
-                    Block {entry.blockNumber.toString()}
-                    {entry.txHash ? ` • ${entry.txHash.slice(0, 10)}...${entry.txHash.slice(-6)}` : ''}
-                  </p>
-                </article>
-              ))
-            )}
           </div>
         </div>
       ) : null}
