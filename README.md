@@ -35,7 +35,6 @@ For testing and benchmarking, the repo also includes mock assets and a mock lend
 - Hardhat 3
 - ethers.js
 - OpenZeppelin contracts
-- Chainlink CRE-compatible automation hooks used by the settlement flow
 - TypeScript for tests, scripts, and deployment logic
 - Vite + React in `frontend/`
 
@@ -70,6 +69,7 @@ If you run the frontend against Sepolia, set the matching Vite variable as well:
 
 ```env
 VITE_SEPOLIA_RPC_URL=https://your-sepolia-rpc-url
+VITE_CHAIN_ID=11155111
 ```
 
 ## How The Protocol Works
@@ -78,8 +78,20 @@ VITE_SEPOLIA_RPC_URL=https://your-sepolia-rpc-url
 2. The `ComplianceManager` validates whether the caller, token, and contract state are allowed.
 3. Traders submit commit hashes first, then reveal order details to avoid mempool sniping.
 4. The orderbooks match compatible orders and forward the result to the `SettlementEngine`.
-5. The settlement engine performs atomic internal transfers and clears trades in batches.
-6. When enabled, idle capital can be routed through the lending pool for yield generation.
+5. The settlement engine queues matched trades and performs atomic internal transfers in batches.
+6. After the settlement window expires, any account can call `SettlementEngine.settleBatch()` to settle the pending batch.
+7. When enabled, idle capital can be routed through the lending pool for yield generation.
+
+### Batch Settlement
+
+Matched trades are accumulated into batches. Each batch has a configurable settlement window;
+once that window expires, settlement is triggered manually by calling `SettlementEngine.settleBatch()`.
+The function is permissionless, so it can be called by an operator, a participant, or any other account
+that submits the transaction.
+
+The project previously used Chainlink Automation to trigger settlement automatically. That integration
+was removed after the service was deprecated. Manual, permissionless settlement is now the active settlement
+mechanism used by the contracts, scripts, and frontend.
 
 ## Build, Test, and Benchmark
 
@@ -134,11 +146,24 @@ Lastly, open your browser on the endpoint that the frontend is running on to int
 
 ### Sepolia Deployment
 
-The Sepolia deployment module uses the same protocol wiring but is configured for the live Sepolia network. So theres no need to run a local node now, just make sure your environment variables are set and provide the CRE forwarder address required by `AutomationReceiver` when you deploy:
+The Sepolia deployment module uses the same protocol wiring but is configured for the live Sepolia network. So theres no need to run a local node; just make sure your environment variables are set:
 
 ```shell
 npx hardhat ignition deploy ./ignition/modules/SepoliaDeployment.ts --network sepolia
 ```
+
+Hardhat Ignition writes the deployed contract addresses to
+`ignition/deployments/chain-11155111/deployed_addresses.json`, which is the address file
+used by the frontend. A normal rerun resumes the existing Ignition deployment and keeps
+the same addresses. To deploy a fresh copy of the protocol, use `--reset`; this creates
+new contract addresses and updates the deployment output:
+
+```shell
+npx hardhat ignition deploy ./ignition/modules/SepoliaDeployment.ts --network sepolia --reset
+```
+
+After a fresh deployment, restart the frontend dev server so Vite reloads the updated
+address file. You do not need to edit each contract address manually.
 
 After deployment, you only need to run the frontend application in a separate terminal:
 
@@ -154,4 +179,5 @@ And since the deployment stays on Sepolia there is no need to keep deploying it 
 
 - The contracts and scripts in this repository are built for experimentation, evaluation, and thesis presentation.
 - The settlement engine is batch-oriented so gas costs can be amortized across multiple matched trades.
+- Settlement is currently manual and permissionless: after the settlement window expires, call `SettlementEngine.settleBatch()` to process the pending batch.
 - The lending-pool path is optional and exists to measure the trade-off between yield generation and extra gas overhead.
