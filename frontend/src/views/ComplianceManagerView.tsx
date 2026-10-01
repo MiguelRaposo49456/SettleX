@@ -990,7 +990,7 @@ function ComplianceManagerView() {
             </button>
             <button
               onClick={settleBatch}
-              disabled={busyAction !== 'idle' || !isOperator || !settlementLoaded || (countdownSeconds !== null && countdownSeconds > 0)}
+              disabled={busyAction !== 'idle' || !settlementLoaded || (countdownSeconds !== null && countdownSeconds > 0)}
             >
               Settle Batch
             </button>

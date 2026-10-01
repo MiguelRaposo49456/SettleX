@@ -7,10 +7,11 @@ import CustodianView from './views/CustodianView';
 import FungibleOrderbookView from './views/FungibleOrderbookView';
 import NFTOrderbookView from './views/NFTOrderbookView';
 import MarketHistoryView from './views/MarketHistoryView.tsx';
+import SettlementView from './views/SettlementView';
 import { COMPLIANCE_MANAGER_CONTRACT } from './constants/contracts';
 import './App.css';
 
-type ViewId = 'overview' | 'custodian' | 'fungible-orderbook' | 'nft-orderbook' | 'market-history' | 'compliance';
+type ViewId = 'overview' | 'custodian' | 'fungible-orderbook' | 'nft-orderbook' | 'market-history' | 'settlement' | 'compliance';
 
 const ALL_VIEWS: Array<{ id: ViewId; label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -18,6 +19,7 @@ const ALL_VIEWS: Array<{ id: ViewId; label: string }> = [
   { id: 'fungible-orderbook', label: 'Fungible Orderbook' },
   { id: 'nft-orderbook', label: 'NFT Orderbook' },
   { id: 'market-history', label: 'Market History' },
+  { id: 'settlement', label: 'Settlement' },
   { id: 'compliance', label: 'Compliance Manager' },
 ];
 
@@ -100,6 +102,9 @@ function App() {
             </section>
             <section hidden={activeView !== 'market-history'}>
               <MarketHistoryView isRegulatorAllowed={isComplianceAdmin} />
+            </section>
+            <section hidden={activeView !== 'settlement'}>
+              <SettlementView />
             </section>
             <section hidden={activeView !== 'compliance'}>
               <ComplianceManagerView />
